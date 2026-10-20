@@ -1,0 +1,26 @@
+---
+- name: Installer Node.js (npm inclus)
+  hosts: ubuntu_servers
+  become: true
+  tasks:
+    - name: Installer nodejs
+      ansible.builtin.apt:
+        name: nodejs
+        state: present
+        update_cache: true
+
+    - name: Version de Node.js
+      ansible.builtin.command: node --version
+      register: node_version
+      changed_when: false
+
+    - name: Version de npm
+      ansible.builtin.command: npm --version
+      register: npm_version
+      changed_when: false
+
+    - name: Afficher les versions
+      ansible.builtin.debug:
+        msg:
+          - "Node.js {{ node_version.stdout }}"
+          - "npm {{ npm_version.stdout }}"

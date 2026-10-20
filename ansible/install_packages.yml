@@ -1,0 +1,13 @@
+---
+- name: Installer des paquets de base
+  hosts: ubuntu_servers
+  become: true
+  tasks:
+    - name: Installer curl, git et tree
+      ansible.builtin.apt:
+        name:
+          - curl
+          - git
+          - tree
+        state: present
+        update_cache: true

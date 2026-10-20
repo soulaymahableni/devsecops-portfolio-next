@@ -4,6 +4,9 @@ import Projects from "@/components/Projects";
 import Experience from "@/components/Experience";
 import Contact from "@/components/Contact";
 
+// Données lues depuis l'API à chaque requête (pas figées au build)
+export const dynamic = "force-dynamic";
+
 export default function Home() {
   return (
     <>

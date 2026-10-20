@@ -1,0 +1,37 @@
+services:
+  api:
+    build: ./api
+    image: devsecops-api
+    container_name: devsecops-api
+    environment:
+      - PORT=4000
+      - CORS_ORIGIN=http://localhost:3000
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - portfolio-net
+    restart: unless-stopped
+
+  frontend:
+    build: .
+    image: devsecops-portfolio
+    container_name: devsecops-portfolio
+    environment:
+      - API_URL=http://api:4000
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - portfolio-net
+    restart: unless-stopped
+
+networks:
+  portfolio-net:
+    driver: bridge

@@ -1,0 +1,42 @@
+---
+- name: Installer Docker sur Ubuntu
+  hosts: docker_hosts
+  become: true
+
+  tasks:
+    - name: Installer Docker, Docker Compose et Buildx
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - docker-compose-v2
+          - docker-buildx
+        state: present
+        update_cache: true
+
+    - name: Démarrer Docker et l'activer au démarrage
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Ajouter l'utilisateur au groupe docker
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: true
+
+    - name: Récupérer la version de Docker
+      ansible.builtin.command: docker --version
+      register: docker_version
+      changed_when: false
+
+    - name: Récupérer la version de Docker Compose
+      ansible.builtin.command: docker compose version
+      register: compose_version
+      changed_when: false
+
+    - name: Afficher les versions
+      ansible.builtin.debug:
+        msg:
+          - "{{ docker_version.stdout }}"
+          - "{{ compose_version.stdout }}"

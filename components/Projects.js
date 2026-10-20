@@ -1,12 +1,15 @@
 import Link from "next/link";
-import { projects } from "@/data/projects";
+import { getProjects } from "@/lib/api";
+import DataSource from "@/components/DataSource";
 
-export default function Projects({ limit }) {
+export default async function Projects({ limit }) {
+  const { data: projects, source } = await getProjects();
   const list = limit ? projects.slice(0, limit) : projects;
 
   return (
     <section id="projects" className="section">
       <h2>Projects</h2>
+      <DataSource source={source} />
       <div className="grid">
         {list.map((project) => (
           <article key={project.slug} className="card">

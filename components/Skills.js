@@ -1,9 +1,13 @@
-import { skills } from "@/data/skills";
+import { getSkills } from "@/lib/api";
+import DataSource from "@/components/DataSource";
 
-export default function Skills() {
+export default async function Skills() {
+  const { data: skills, source } = await getSkills();
+
   return (
     <section id="skills" className="section">
       <h2>DevSecOps Skills</h2>
+      <DataSource source={source} />
       <div className="grid">
         {skills.map((skill) => (
           <div key={skill.name} className="card">
