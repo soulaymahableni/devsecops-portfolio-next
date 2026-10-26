@@ -3,6 +3,7 @@ const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const { z } = require("zod");
+const prisma = require("./db");
 const { profile, projects, skills } = require("./data/portfolio");
 
 const app = express();
@@ -50,7 +51,7 @@ const contactSchema = z
   .strict(); // refuse les champs inconnus
 
 // Q46 : POST /api/contact
-app.post("/api/contact", contactLimiter, (req, res) => {
+app.post("/api/contact", contactLimiter, async (req, res, next) => {
   const result = contactSchema.safeParse(req.body);
   if (!result.success) {
     return res.status(400).json({
@@ -62,7 +63,12 @@ app.post("/api/contact", contactLimiter, (req, res) => {
     });
   }
   // Q54 : l'enregistrement en base viendra ici
-  res.status(201).json({ message: "Message reçu", received: { name: result.data.name } });
+  try {
+    const saved = await prisma.message.create({ data: result.data });
+    res.status(201).json({ message: "Message reçu", id: saved.id });
+  } catch (err) {
+    next(err);
+  }
 });
 
 app.use((req, res) => res.status(404).json({ error: "Route introuvable" }));

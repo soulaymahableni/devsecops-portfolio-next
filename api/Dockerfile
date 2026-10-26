@@ -2,13 +2,17 @@ FROM node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production
 
-# Dépendances de production uniquement (cache Docker réutilisé si package*.json ne change pas)
+RUN apk add --no-cache openssl
+
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm ci
+
+COPY prisma ./prisma
+RUN npx prisma generate
 
 COPY src ./src
 
-# Utilisateur non root fourni par l'image officielle
+RUN chown -R node:node /app
 USER node
 EXPOSE 4000
-CMD ["node", "src/server.js"]
+CMD ["sh", "-c", "npx prisma migrate deploy && node src/server.js"]
