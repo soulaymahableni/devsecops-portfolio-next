@@ -56,7 +56,14 @@ pipeline {
     // Q65 : SAST
     stage('Semgrep') {
       steps {
-        sh 'docker run --rm -v scan-src:/src semgrep/semgrep semgrep scan --config auto --error /src'
+        sh '''
+          docker rm -f semgrep-run >/dev/null 2>&1 || true
+          docker create --name semgrep-run -w /src python:3.12-slim \
+            sh -c "pip install --no-cache-dir --default-timeout=300 --retries 10 semgrep && semgrep scan --config auto --error --exclude node_modules --exclude .next /src"
+          tar --exclude=node_modules --exclude=.next --exclude=.git -cf - . | docker cp - semgrep-run:/src
+          docker start -a semgrep-run
+          docker rm semgrep-run
+        '''
       }
     }
 
