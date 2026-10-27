@@ -1,0 +1,22 @@
+---
+- name: Installer Docker et le plugin Compose
+  ansible.builtin.apt:
+    name:
+      - docker.io
+      - docker-compose-v2
+      - git
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Docker démarré et activé au boot
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Autoriser l'utilisateur vagrant à utiliser Docker
+  ansible.builtin.user:
+    name: "{{ docker_user }}"
+    groups: docker
+    append: true

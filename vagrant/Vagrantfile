@@ -1,0 +1,24 @@
+# -*- mode: ruby -*-
+Vagrant.configure("2") do |config|
+  config.vm.box = "bento/ubuntu-24.04"
+  config.vm.hostname = "portfolio-vm"
+
+  config.vm.network "private_network", ip: "192.168.56.40"
+  config.vm.network "forwarded_port", guest: 3000, host: 3000, host_ip: "0.0.0.0"
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "portfolio-vm"
+    vb.memory = 2560
+    vb.cpus   = 2
+  end
+
+  # Swap de 2 Go pour éviter le crash pendant le build Next.js
+  config.vm.provision "shell", inline: "[ -f /swapfile ] || (fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile); swapon /swapfile 2>/dev/null || true"
+
+  # vagrant up -> VM -> Ansible (Docker) -> déploiement du Portfolio
+  config.vm.provision "ansible_local" do |a|
+    a.provisioning_path = "/vagrant/ansible"
+    a.playbook          = "site.yml"
+    a.install_mode      = "default"
+  end
+end

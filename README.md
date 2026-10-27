@@ -689,3 +689,184 @@ docker compose exec frontend wget -qO- http://api:4000/api/health
 ![Portfolio alimenté par l'API](docs/screenshots/42-portfolio-api.png)
 
 Démonstration du repli : `docker compose stop api` → le portfolio affiche les données locales ; `docker compose start api` → les données de l'API reviennent.
+
+---
+
+# Activité 4 : Vagrant/Ansible, sécurisation de l'API, PostgreSQL, tests et pipeline DevSecOps
+
+## Avancement
+
+| Partie | Questions | État |
+|---|---|---|
+| 11. Vagrant + Ansible | 43 | ✅ fait |
+| | 44-45 | 🔄 en cours (captures `vagrant up` / `destroy` à ajouter) |
+| 12. API sécurisée | 46-52 | ✅ fait |
+| 13. PostgreSQL / Prisma | 53-56 | ✅ fait |
+| 14. Tests | 57-60 | ✅ fait |
+| 15. Jenkins tests + images | 61-63 | 🔄 stages tests OK, build/tag SHA à finaliser |
+| 16. Pipeline DevSecOps | 64-69 | 🔄 en cours (Gitleaks OK, Semgrep/npm audit/Dependency-Check/Trivy à finaliser) |
+
+---
+
+## 11. Vagrant + Ansible
+
+### Q43 : playbook de déploiement du Portfolio
+
+```bash
+cd ~/portfolio-iac
+vagrant provision        # lance : ansible-playbook ansible/site.yml
+```
+
+Le playbook (`vagrant/ansible/site.yml`) utilise deux rôles : `docker_install` (Docker + plugin Compose) et `portfolio_deploy` (clone du dépôt, `docker compose up -d --build`, attente du port 3000, affichage de `docker ps`).
+
+![Playbook Ansible](docs/captures/q43-ansible-playbook.png)
+![Portfolio accessible](docs/captures/q43-portfolio-accessible.png)
+
+### Q44 : lancement automatique d'Ansible par Vagrant
+
+`vagrant up` -> création de la VM -> provisioner `ansible_local` -> installation de Docker -> déploiement du Portfolio.
+
+![Automatisation complète](docs/captures/q44-vagrant-ansible-auto.png)
+
+### Q45 : destroy puis up
+
+```bash
+vagrant destroy -f
+vagrant up
+```
+> Capture à ajouter.
+
+---
+
+## 12. Évolution et sécurisation de l'API
+
+### Q46 : route `POST /api/contact`
+
+```bash
+curl -i -X POST http://localhost:4000/api/contact \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Soulayma","email":"test@example.com","message":"Bonjour, ceci est un test"}'
+```
+Réponse : `HTTP/1.1 201 Created` — `{"message":"Message reçu","id":1}`
+
+![201 Created](docs/captures/q46-post-contact-201.png)
+
+### Q47 : formulaire Next.js connecté à l'API
+
+Le formulaire (`components/Contact.jsx`) appelle `app/api/contact/route.js`, qui relaie vers l'API Express (`API_URL`).
+
+![Envoi réussi](docs/captures/q47-formulaire-succes.png)
+
+### Q48 : validation stricte avec Zod
+
+Schéma `.strict()` : champs inconnus, email invalide ou message trop court -> `400`.
+
+![Requête refusée (Zod)](docs/captures/q48-zod-400.png)
+
+### Q49 : gestion centralisée des erreurs
+
+Un seul middleware d'erreur renvoie un JSON propre, sans stack trace (ex. JSON malformé -> 400).
+
+![Erreur centralisée](docs/captures/q49-erreur-json-400.png)
+
+### Q50 : headers de sécurité Helmet
+
+```bash
+curl -I http://localhost:4000/api/health
+```
+![Headers Helmet](docs/captures/q50-helmet-headers.png)
+
+### Q51 : rate limiting (5 requêtes / 15 min sur `POST /api/contact`)
+
+Les 5 premières requêtes passent (201), la 6e est refusée (429).
+
+![Script 201 puis 429](docs/captures/q51-rate-limit-429-script.png)
+![Réponse 429](docs/captures/q51-rate-limit-429-detail.png)
+
+### Q52 : OWASP API Security Top 10
+
+| Risque OWASP | Concerne notre API ? | Mesure en place / prévue |
+|---|---|---|
+| API1 Broken Object Level Authorization | Faible (pas de comptes utilisateurs) | Aucune ressource privée exposée ; à prévoir si authentification ajoutée |
+| API2 Broken Authentication | Non (API publique en lecture) | Prévu : authentification pour toute future route d'administration |
+| API3 Broken Object Property Level Authorization | Oui | Zod `.strict()` : seuls `name`, `email`, `message` sont acceptés |
+| API4 Unrestricted Resource Consumption | Oui | Rate limiting 5/15 min sur `/api/contact` ; corps JSON limité à 10 kb |
+| API5 Broken Function Level Authorization | Faible | Seules des routes GET publiques + un POST de contact |
+| API6 Unrestricted Access to Sensitive Business Flows | Oui (spam du formulaire) | Rate limiting ; prévu : captcha |
+| API7 Server Side Request Forgery | Non | L'API n'appelle aucune URL fournie par l'utilisateur |
+| API8 Security Misconfiguration | Oui | Helmet, `x-powered-by` désactivé, CORS restreint (`CORS_ORIGIN`), erreurs sans stack trace, secrets en variables d'environnement |
+| API9 Improper Inventory Management | Faible | Routes documentées dans ce README |
+| API10 Unsafe Consumption of APIs | Non | Aucune API tierce consommée |
+
+---
+
+## 13. PostgreSQL et Prisma
+
+### Q53 : service PostgreSQL dans Docker Compose
+
+Service `db` : image `postgres:16-alpine`, healthcheck `pg_isready`, volume `pgdata`.
+
+![docker-compose.yml](docs/captures/q53-docker-compose-yml.png)
+![docker compose ps](docs/captures/q53-compose-ps-env-example.png)
+
+### Q54 : enregistrement des messages en base
+
+```bash
+docker compose exec db psql -U portfolio -d portfolio -c 'SELECT * FROM "Message";'
+```
+![Données en table](docs/captures/q54-select-message.png)
+![Deux lignes](docs/captures/q54-select-message-2lignes.png)
+
+### Q55 : migrations Prisma
+
+```bash
+cd api
+npx prisma migrate dev --name init     # développement
+npx prisma migrate deploy              # production (lancé au démarrage du conteneur API)
+```
+![Migration](docs/captures/q55-prisma-migrate.png)
+
+### Q56 : variables dans `.env.example`
+
+`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL` (valeurs factices uniquement ; le vrai `.env` n'est pas versionné).
+
+![.env.example](docs/captures/q56-env-example.png)
+
+---
+
+## 14. Tests applicatifs
+
+### Q57 : test frontend (Vitest + Testing Library)
+
+```bash
+npm test
+```
+3 tests passés (`tests/Contact.test.jsx`).
+
+![Tests frontend](docs/captures/q57-test-frontend-vitest.png)
+
+### Q58-59 : tests API (Jest + Supertest) : route, entrées invalides, injections, requêtes malformées
+
+```bash
+cd api && npm test
+```
+17 tests passés (`api.test.js`, `security.test.js`).
+
+![Tests API](docs/captures/q58-59-tests-api-jest.png)
+
+### Q60 : test d'intégration frontend -> API -> PostgreSQL
+
+```bash
+npm run test:integration     # bash tests/integration.sh
+```
+![Intégration](docs/captures/q60-test-integration.png)
+
+---
+
+## 15-16. Jenkins et pipeline DevSecOps
+
+Le `Jenkinsfile` enchaîne : Checkout + Git SHA, Tests API, Tests Frontend (conteneur `node:22-alpine`), Gitleaks, Semgrep, npm audit, Dependency-Check, build des images `devsecops-portfolio:<SHA>` et `devsecops-api:<SHA>`, Trivy (échec si CRITICAL).
+
+![Jenkins](docs/captures/q61-jenkins-build.png)
+
+> Captures des stages complets, des images taguées par SHA (Q63), des scanners (Q64-68) et des pipelines réussi/échoué (Q69) : à compléter.
