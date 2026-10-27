@@ -24,8 +24,8 @@ pipeline {
       steps {
         sh '''
           docker rm -f fe-test >/dev/null 2>&1 || true
-          docker create --name fe-test -w /app node:22-alpine \
-            sh -c "npm ci --fetch-timeout=600000 --fetch-retries=5 && npm test"
+          docker create --name fe-test -v npm-cache:/root/.npm -w /app node:22-alpine \
+            sh -c "npm ci --prefer-offline --fetch-timeout=600000 --fetch-retries=5 && npm test"
           tar --exclude=node_modules --exclude=.next --exclude=.git -cf - . | docker cp - fe-test:/app
           docker start -a fe-test
           docker rm fe-test
