@@ -1,6 +1,6 @@
 pipeline {
   agent any
-  options { timeout(time: 90, unit: 'MINUTES') }
+  options { timeout(time: 120, unit: 'MINUTES') }
 
   environment {
     NPM_OPTS = '--fetch-timeout=600000 --fetch-retries=5'
@@ -19,6 +19,7 @@ pipeline {
     stage('Tests API') {
       steps { dir('api') { sh 'npm ci $NPM_OPTS && npx prisma generate && npm test' } }
     }
+
     stage('Tests Frontend') {
       steps {
         sh '''
@@ -32,7 +33,6 @@ pipeline {
       }
     }
 
-    // Prépare le code dans un volume lisible par les scanners (socket Docker partagé)
     stage('Préparation scanners') {
       steps {
         sh '''
@@ -68,7 +68,7 @@ pipeline {
       }
     }
 
-    // Q67 : Dependency-Check (premier lancement très long : base NVD)
+    // Q67 : Dependency-Check
     stage('Dependency-Check') {
       steps {
         sh '''
