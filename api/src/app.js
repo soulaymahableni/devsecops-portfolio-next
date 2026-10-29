@@ -6,7 +6,7 @@ const { z } = require("zod");
 const prisma = require("./db");
 const { profile, projects, skills } = require("./data/portfolio");
 
-const app = express();
+const app = express(); // nosemgrep: javascript.express.security.audit.express-check-csurf-middleware-usage.express-check-csurf-middleware-usage -- API JSON stateless, sans cookie ni session : CSRF non applicable
 
 app.disable("x-powered-by");
 app.set("trust proxy", 1); // l'API est derrière le frontend Next (proxy)
