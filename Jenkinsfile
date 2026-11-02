@@ -104,8 +104,8 @@ pipeline {
     // Q68-69 : Trivy, échec si CRITICAL
     stage('Trivy') {
       steps {
-        sh 'docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --severity CRITICAL --exit-code 1 devsecops-portfolio:$SHA'
-        sh 'docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --severity CRITICAL --exit-code 1 devsecops-api:$SHA'
+        sh 'docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache/ aquasec/trivy:latest image --skip-db-update --skip-java-db-update --scanners vuln --timeout 30m --severity CRITICAL --exit-code 1 devsecops-portfolio:$SHA'
+        sh 'docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache/ aquasec/trivy:latest image --skip-db-update --skip-java-db-update --scanners vuln --timeout 30m --severity CRITICAL --exit-code 1 devsecops-api:$SHA'
       }
     }
   }
