@@ -11,7 +11,7 @@ const app = express(); // nosemgrep: javascript.express.security.audit.express-c
 app.disable("x-powered-by");
 app.set("trust proxy", 1); // l'API est derrière le frontend Next (proxy)
 app.use(helmet()); // Q50
-app.use(cors({ origin: process.env.CORS_ORIGIN || "*" }));
+app.use(cors({ origin: process.env.CORS_ORIGIN || "http://localhost:3000" }));
 app.use(express.json({ limit: "10kb" }));
 
 // Routes existantes
