@@ -1,18 +1,27 @@
-FROM node:22-alpine
+# 1) Dépendances de production uniquement
+FROM node:22-alpine AS deps
 WORKDIR /app
-ENV NODE_ENV=production
-
-RUN apk add --no-cache openssl
-
 COPY package*.json ./
-RUN npm ci
+RUN npm ci --omit=dev && npm cache clean --force
 
+# 2) Génération du client Prisma
+FROM deps AS build
+RUN apk add --no-cache openssl
 COPY prisma ./prisma
 RUN npx prisma generate
 
-COPY src ./src
+# 3) Image finale minimale
+FROM node:22-alpine AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+RUN apk add --no-cache openssl \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
-RUN chown -R node:node /app
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --chown=node:node package*.json ./
+COPY --chown=node:node prisma ./prisma
+COPY --chown=node:node src ./src
+
 USER node
 EXPOSE 4000
-CMD ["sh", "-c", "npx prisma migrate deploy && node src/server.js"]
+CMD ["sh", "-c", "./node_modules/.bin/prisma migrate deploy && node src/server.js"]
