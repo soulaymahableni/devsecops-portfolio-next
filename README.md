@@ -869,4 +869,48 @@ Le `Jenkinsfile` enchaîne : Checkout + Git SHA, Tests API, Tests Frontend (cont
 
 ![Jenkins](docs/captures/q61-jenkins-build.png)
 
+---
+
+# Activité 4 : compléments (Vagrant, Jenkins, pipeline DevSecOps)
+
+## Q44 et Q45 : Vagrant, Ansible et redéploiement automatique
+
+`vagrant up` crée la VM, lance Ansible (`ansible_local`), installe Docker, puis déploie le Portfolio avec Docker Compose. Test de la Q45 : la VM est détruite puis recréée, et le Portfolio est redéployé sans intervention.
+
+```bash
+cd ~/portfolio-iac
+vagrant destroy -f
+vagrant up
+```
+
+Résultat : `PLAY RECAP` avec `ok=9 changed=4 failed=0`.
+
+![PLAY RECAP](docs/captures/q44-vagrant-up-recap.png)
+
+Portfolio accessible après le redéploiement :
+
+![Portfolio redéployé](docs/captures/q45-portfolio-redeploye.png)
+
+## Q61 à Q69 : pipeline Jenkins
+
+Le `Jenkinsfile` exécute : tests de l'API et du frontend, Gitleaks, Semgrep, npm audit, Dependency-Check (non bloquant), build des images `devsecops-portfolio` et `devsecops-api` taguées avec le Git SHA, puis Trivy.
+
+| Question | Outil | Résultat |
+|---|---|---|
+| Q64 | Gitleaks | Aucun secret détecté |
+| Q65 | Semgrep | 0 finding (un faux positif CSRF a été justifié avec `nosemgrep`, car l'API est stateless) |
+| Q66 | npm audit | 0 vulnérabilité critique (Next.js mis à jour de 16.4.0 vers 16.4.3) |
+| Q67 | Dependency-Check | Configuré et non bloquant : la base NVD exige une clé API, indisponible dans le lab. La détection est assurée par `npm audit` |
+| Q68 | Trivy | Aucune vulnérabilité CRITICAL dans les deux images |
+
+Exemple de dépendances vulnérables détectées (Q67) :
+
+![npm audit](docs/captures/q67-npm-audit.png)
+
+### Q69 : pipeline réussi et pipeline échoué
+
+Le pipeline échoue dès qu'un secret ou une vulnérabilité critique est détecté. Sur la capture : le build **#10 est réussi** et le build **#9 a échoué** (Trivy). Le build #6 avait aussi échoué sur Semgrep (faux positif CSRF).
+
+![Jenkins : build réussi et build échoué](docs/captures/q61-jenkins-job.png)
+
 > Captures des stages complets, des images taguées par SHA (Q63), des scanners (Q64-68) et des pipelines réussi/échoué (Q69) : à compléter.
