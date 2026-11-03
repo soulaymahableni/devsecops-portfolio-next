@@ -1,916 +1,320 @@
-# DevSecOps Portfolio — Next.js + Jenkins
-
-Suite du projet DevSecOps (parties 18 à 24).
-Parties 1 à 17 (SSH, Docker, Jenkins, CV, Dockerisation, Vagrant) : https://github.com/soulaymahableni/mini-cv
-
-**Environnement** : VM Ubuntu Server (VMware, IP `192.168.190.141`), Node.js 22, Next.js 16, Jenkins sur le port 8080.
 
 ---
 
-## V. Migration du Portfolio vers Next.js
+# Activité 5 : GitHub Actions et sécurité GitHub (Q70–78)
 
-### 18. Création du projet
+## Q70 à Q73 : workflow CI
 
-Installation de Node.js 22 sur la VM, puis création du projet :
+Le workflow `.github/workflows/ci.yml` se déclenche à chaque `push` sur `main` et à chaque Pull Request. Il contient six jobs :
 
-```bash
-sudo apt update && sudo apt install -y curl ca-certificates
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-sudo apt install -y nodejs
-node --version && npm --version && npx --version
-
-npx create-next-app@latest devsecops-portfolio-next --js --eslint --no-tailwind --app --no-src-dir --import-alias "@/*" --use-npm
-cd devsecops-portfolio-next
-npm run dev -- -H 0.0.0.0
-```
-
-L'option `-H 0.0.0.0` rend le serveur accessible depuis la machine physique : `http://192.168.190.141:3000`.
-
-Sections conservées : **About, Skills, Projects, Experience, Contact**.
-
-![Application Next.js](docs/screenshots/18-nextjs-app.png)
-
-### 19. Composants réutilisables
-
-```text
-devsecops-portfolio-next/
-├── app/
-│   ├── layout.js              # Header + Footer communs
-│   ├── page.js                # Accueil : About, Skills, Projects, Experience, Contact
-│   ├── globals.css
-│   └── projects/
-│       ├── page.js            # /projects
-│       └── [slug]/page.js     # /projects/project-name
-├── components/
-│   ├── Header.js
-│   ├── About.js
-│   ├── Skills.js
-│   ├── Projects.js
-│   ├── Experience.js
-│   ├── Contact.js
-│   └── Footer.js
-├── data/
-│   ├── projects.js
-│   └── skills.js
-├── Jenkinsfile
-└── next.config.mjs
-```
-
-### 20. Données séparées des composants
-
-Les informations sont stockées dans `data/` et importées par les composants, qui génèrent l'affichage avec `.map()`.
-
-`data/projects.js` :
-
-```js
-export const projects = [
-  {
-    slug: "portfolio-docker",
-    name: "Portfolio dockerisé",
-    summary: "Portfolio servi par Nginx dans un conteneur.",
-    description: "Image Docker cv-docker basée sur Nginx, lancée avec docker run puis Docker Compose.",
-    tech: ["Docker", "Nginx", "Docker Compose"],
-  },
-  // ...
-];
-
-export function getProject(slug) {
-  return projects.find((p) => p.slug === slug);
-}
-```
-
-`data/skills.js` :
-
-```js
-export const skills = [
-  { name: "Docker", level: 80, description: "Images, conteneurs, Docker Compose" },
-  { name: "Jenkins", level: 70, description: "Pipelines CI/CD déclaratifs" },
-  // Git, Kubernetes, Ansible, Terraform, Argo CD, Next.js...
-];
-```
-
-### 21. Pages dédiées aux projets
-
-| Route | Fichier | Rôle |
+| Job | Rôle | Outil |
 |---|---|---|
-| `/projects` | `app/projects/page.js` | Liste de tous les projets |
-| `/projects/project-name` | `app/projects/[slug]/page.js` | Détail d'un projet (route dynamique) |
+| `tests-api` | Tests de l'API | Jest, Supertest |
+| `tests-frontend` | Tests du frontend | Vitest |
+| `secrets` | Détection de secrets | Gitleaks |
+| `sast` | Analyse statique du code | Semgrep |
+| `dependencies` | Contrôle des dépendances | `npm audit` (seuil critique) |
+| `images` | Construction des deux images Docker puis scan | Docker, Trivy (CRITICAL, `--exit-code 1`) |
 
-Exemples : `http://192.168.190.141:3000/projects` et `http://192.168.190.141:3000/projects/portfolio-nextjs`.
+Le job `images` dépend des deux jobs de tests : si un test échoue, les images ne sont pas construites.
 
-<!-- À AJOUTER : captures des deux pages -->
-![Liste des projets](docs/screenshots/21-projects.png)
-![Détail d'un projet](docs/screenshots/21-project-detail.png)
+![Workflow GitHub Actions réussi](docs/captures/q70-github-actions-vert.png)
 
----
+## Q74 : CodeQL et comparaison avec Semgrep
 
-## VI. Premier pipeline Jenkins
+CodeQL est activé par le workflow `.github/workflows/codeql.yml` (push, Pull Request et analyse hebdomadaire). Il a levé une alerte **Permissive CORS configuration** (gravité moyenne) dans `api/src/app.js` : l'API autorisait toutes les origines (`*`). L'alerte a été corrigée en limitant l'origine par défaut (variable `CORS_ORIGIN`), puis fermée.
 
-### Préparation de Jenkins
+Avant la correction :
 
-Pour que le pipeline puisse utiliser un agent Docker :
+![CodeQL, alerte ouverte](docs/captures/q74-codeql-avant.png)
 
-```bash
-sudo usermod -aG docker jenkins
-sudo systemctl restart jenkins
-```
+Après la correction :
 
-Jenkins est accessible depuis la machine physique sur `http://192.168.190.141:8080`.
+![CodeQL, alerte fermée](docs/captures/q74-codeql-apres.png)
 
-![Page d'accueil Jenkins](docs/screenshots/22-jenkins-accueil.png)
-
-Plugins installés (Manage Jenkins → Plugins) : **Docker Pipeline**, **Docker Commons**, **Git server**, **SSH server**.
-
-![Installation des plugins](docs/screenshots/22-jenkins-plugins.png)
-
-### 22. Pipeline : récupération du dépôt GitHub
-
-Création du job : **Nouveau Item** → `devsecops-portfolio-pipeline` → type **Pipeline**.
-
-![Création du job](docs/screenshots/22-jenkins-nouveau-item.png)
-
-Configuration du job : *Pipeline script from SCM* → Git → URL du dépôt GitHub → branche `*/main` → Script Path `Jenkinsfile`.
-
-![Job créé](docs/screenshots/22-pipeline-job.png)
-
-Lancement du build n°1 :
-
-![Build en cours](docs/screenshots/22-pipeline-build-en-cours.png)
-
-Résultat : build n°1 réussi (coche verte).
-
-![Pipeline exécuté avec succès](docs/screenshots/22-pipeline-succes.png)
-
-**Jenkinsfile** :
-
-```groovy
-pipeline {
-    agent {
-        docker {
-            image 'node:22-alpine'
-            args '-u root:root'
-        }
-    }
-
-    environment {
-        CI = 'true'
-        NEXT_TELEMETRY_DISABLED = '1'
-    }
-
-    stages {
-        stage('Checkout') {
-            steps {
-                git branch: 'main',
-                    url: 'https://github.com/soulaymahableni/devsecops-portfolio-next.git'
-            }
-        }
-
-        stage('Install dependencies') {
-            steps {
-                sh 'node --version && npm --version'
-                sh 'npm ci || npm install'
-            }
-        }
-
-        stage('Build') {
-            steps {
-                sh 'npm run build'
-            }
-        }
-    }
-
-    post {
-        success { echo 'Build Next.js réussi.' }
-        failure { echo 'Le pipeline a échoué, consultez les logs.' }
-    }
-}
-```
-
-### 23. Installation des dépendances
-
-Stage `Install dependencies` : `npm ci` installe les versions exactes du `package-lock.json` (reproductible) ; `npm install` sert de repli si le fichier de verrouillage est absent.
-
-<!-- À AJOUTER : Console Output du stage -->
-![Stage Install dependencies](docs/screenshots/23-install.png)
-
-### 24. Build automatique
-
-Stage `Build` : `npm run build` compile l'application Next.js (`Compiled successfully` dans les logs).
-
-<!-- À AJOUTER : Console Output du stage -->
-![Stage Build](docs/screenshots/24-build.png)
-
----
-
-## Publication sur GitHub (SSH)
-
-```bash
-git branch -M main
-git add .
-git commit -m "Portfolio Next.js avec Jenkinsfile"
-git remote add origin git@github.com:soulaymahableni/devsecops-portfolio-next.git
-git push -u origin main
-```
-
-Dépôt : https://github.com/soulaymahableni/devsecops-portfolio-next
-
----
-
-## VII. Automatisation avec Ansible
-
-**Architecture** :
-
-| VM | IP | Rôle |
+| Critère | Semgrep | CodeQL |
 |---|---|---|
-| `admin-ansible` | `192.168.190.155` | VM d'administration, Ansible installé |
-| `automatisation` | `192.168.190.141` | Serveur Ubuntu géré par Ansible (Docker, Node.js, portfolio) |
+| Alerte détectée | Absence de protection CSRF (`express-check-csurf-middleware-usage`) | Configuration CORS permissive |
+| Pertinence | Faux positif : l'API est stateless, sans cookie ni session | Vraie alerte |
+| Traitement | Exception `nosemgrep` avec justification écrite dans le code | Correction du code, alerte fermée |
+| Où lire le résultat | Journal du job `sast` | Onglet Security, Code scanning |
+| Rôle dans le pipeline | Bloque la CI (`--error`) | Analyse plus profonde du flux de données |
 
-Ansible est **sans agent** : il se connecte en SSH au serveur et exécute les tâches à distance.
+Les deux outils sont complémentaires : Semgrep est rapide et bloque la Pull Request, CodeQL détecte des problèmes que les règles simples de Semgrep ne voient pas.
 
-### 25. Installation d'Ansible
+## Q75 : Dependabot
 
-Sur la VM `admin-ansible` :
+Le fichier `.github/dependabot.yml` surveille chaque semaine les dépendances npm (`/` et `/api`), les images Docker (`/` et `/api`) et les actions GitHub. Les messages de commit suivent la convention (`chore(deps)`, `chore(docker)`, `ci`). Un **cooldown de 7 jours** a été ajouté pour ne pas proposer une version publiée depuis moins d'une semaine (une version malveillante est souvent retirée dans les premiers jours). Cette règle a été demandée par Semgrep (`dependabot-missing-cooldown`).
 
-```bash
-sudo apt update
-sudo apt install -y ansible
-ansible --version
-```
+![Paramètres de sécurité : graphe de dépendances et alertes Dependabot](docs/captures/q75-parametres-securite-dependabot.png)
 
-![Installation d'Ansible](docs/screenshots/25-ansible-install.png)
+![Liste des Pull Requests ouvertes par Dependabot](docs/captures/q75-dependabot-liste-prs.png)
 
-![Version d'Ansible](docs/screenshots/25-ansible-version.png)
+Exemple de Pull Request générée automatiquement :
 
-Connexion SSH sans mot de passe vers le serveur (clé ed25519) :
+![Pull Request Dependabot](docs/captures/q75-dependabot-pr.png)
 
-```bash
-ssh-keygen -t ed25519
-ssh-copy-id automatisation@192.168.190.141
-ssh automatisation@192.168.190.141   # connexion sans mot de passe
-```
+## Q76 : permissions du GITHUB_TOKEN
 
-![Génération de la clé SSH](docs/screenshots/25-ssh-keygen.png)
+Le workflow CI et le workflow Release déclarent `permissions: contents: read` (lecture seule) au niveau global. Les jobs qui ont besoin de plus reçoivent uniquement ce qui est nécessaire :
 
-### 26. Inventory et test de communication
+| Workflow | Job | Permissions supplémentaires | Raison |
+|---|---|---|---|
+| `codeql.yml` | `analyze` | `security-events: write` | Publier les résultats dans l'onglet Security |
+| `release.yml` | `release` | `contents: write`, `issues: write`, `pull-requests: write` | Créer le tag et la release |
 
-Création du dossier de travail :
+Principe du moindre privilège : si le token fuit ou si une action tierce est compromise, les dégâts sont limités.
 
-```bash
-mkdir -p ~/devsecops-portfolio/ansible && cd ~/devsecops-portfolio/ansible
-```
+## Q77 : actions épinglées par SHA
 
-![Dossier Ansible](docs/screenshots/26-dossier-ansible.png)
-
-`ansible/inventory.ini` :
-
-```ini
-[ubuntu_servers]
-server1 ansible_host=192.168.190.141 ansible_user=automatisation
-
-[docker_hosts]
-server1
-
-[all:vars]
-ansible_python_interpreter=/usr/bin/python3
-ansible_become_exe=/usr/bin/sudo.ws
-```
-
-![Inventory](docs/screenshots/26-inventory.png)
-
-`ansible/ansible.cfg` (évite de répéter `-i inventory.ini`) :
-
-```ini
-[defaults]
-inventory = inventory.ini
-host_key_checking = False
-```
-
-![ansible.cfg](docs/screenshots/26-ansible-cfg.png)
-
-Commande :
-
-```bash
-ansible all -m ping
-```
-
-![Ping Ansible](docs/screenshots/26-ansible-ping.png)
-
-> **Problème rencontré** : Ubuntu 26.04 utilise `sudo-rs` par défaut, dont l'invite de mot de passe n'est pas reconnue par Ansible (`Timeout waiting for privilege escalation prompt`). Solution : utiliser le sudo classique, toujours présent sous le nom `/usr/bin/sudo.ws`, via `ansible_become_exe`.
-
-### 27. Playbook : installation de paquets
-
-`ansible/install_packages.yml` :
+Les actions tierces sont référencées par le **SHA du commit**, avec la version en commentaire :
 
 ```yaml
----
-- name: Installer des paquets de base
-  hosts: ubuntu_servers
-  become: true
-  tasks:
-    - name: Installer curl, git et tree
-      ansible.builtin.apt:
-        name:
-          - curl
-          - git
-          - tree
-        state: present
-        update_cache: true
+- uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+- uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+- uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
 ```
 
-![Playbook dans nano](docs/screenshots/27-playbook-packages-code.png)
+**Pourquoi la chaîne CI/CD est une surface d'attaque.** Un tag comme `@v4` est modifiable : si le compte d'un mainteneur est compromis, l'attaquant peut déplacer le tag vers du code malveillant, qui s'exécuterait dans notre pipeline avec accès au code, aux secrets et au token. Un SHA est immuable. Plus largement, le pipeline exécute du code tiers, manipule des secrets et produit les artefacts livrés en production : le compromettre revient à compromettre tout ce qu'il livre. Dependabot (écosystème `github-actions`) propose ensuite les mises à jour de ces SHA de façon contrôlée.
 
-```bash
-ansible-playbook install_packages.yml -K
-```
+## Q78 : GitHub Actions et Jenkins
 
-![Exécution du playbook](docs/screenshots/27-playbook-packages.png)
-
-Une exécution sur des paquets déjà présents donne `changed=0` : Ansible est **idempotent**, il ne refait pas ce qui est déjà en place.
-
-![Idempotence](docs/screenshots/27-idempotence.png)
-
-### 28. Playbook : installation de Docker
-
-`ansible/install_docker.yml` :
-
-```yaml
----
-- name: Installer Docker sur Ubuntu
-  hosts: docker_hosts
-  become: true
-
-  tasks:
-    - name: Installer Docker, Docker Compose et Buildx
-      ansible.builtin.apt:
-        name:
-          - docker.io
-          - docker-compose-v2
-          - docker-buildx
-        state: present
-        update_cache: true
-
-    - name: Démarrer Docker et l'activer au démarrage
-      ansible.builtin.service:
-        name: docker
-        state: started
-        enabled: true
-
-    - name: Ajouter l'utilisateur au groupe docker
-      ansible.builtin.user:
-        name: "{{ ansible_user }}"
-        groups: docker
-        append: true
-
-    - name: Récupérer la version de Docker
-      ansible.builtin.command: docker --version
-      register: docker_version
-      changed_when: false
-
-    - name: Récupérer la version de Docker Compose
-      ansible.builtin.command: docker compose version
-      register: compose_version
-      changed_when: false
-
-    - name: Afficher les versions
-      ansible.builtin.debug:
-        msg:
-          - "{{ docker_version.stdout }}"
-          - "{{ compose_version.stdout }}"
-```
-
-```bash
-ansible-playbook install_docker.yml -K
-```
-
-Résultat de `docker --version` :
-
-```
-Docker version 29.1.3, build 29.1.3-0ubuntu4.1
-Docker Compose version 2.40.3+ds1-0ubuntu1
-```
-
-![Playbook Docker](docs/screenshots/28-playbook-docker.png)
-
-Les paquets Docker officiels d'Ubuntu (`docker.io`) sont utilisés pour éviter un conflit avec le `containerd` déjà présent. Le playbook est réutilisable sur toute nouvelle VM : il suffit de l'ajouter au groupe `docker_hosts`.
-
-**Bonus** : `ansible/install_node.yml` installe Node.js 22 (npm est inclus dans le paquet `nodejs` d'Ubuntu 26.04, installer `npm` séparément provoque un conflit).
-
-![Playbook Node.js](docs/screenshots/28-playbook-node.png)
+| Critère | GitHub Actions | Jenkins |
+|---|---|---|
+| Hébergement | Géré par GitHub | Auto-hébergé (notre VM) |
+| Configuration | YAML dans `.github/workflows` | `Jenkinsfile` (Groovy) |
+| Maintenance | Aucune | Mises à jour, plugins, disque, mémoire |
+| Intégration avec GitHub | Native (checks de PR, CodeQL, Dependabot) | Via plugins |
+| Contrôle et coûts | Minutes limitées, runners GitHub | Contrôle total, coût matériel |
+| Réseau | Accès Internet rapide | Dépend de la VM (lent ici) |
 
 ---
 
-## VIII. API Node.js / Express
+# Activité 6 : Git Workflow (Q79–84)
 
-### 29. Structure de l'API
+## Q79 : stratégie Git et nommage des branches
 
-L'API est indépendante du frontend et se lance seule :
+Flux de travail : `branch` → `Pull Request` → `review` → `merge`. Personne ne pousse directement sur `main`. Chaque changement passe par une branche courte, une Pull Request vérifiée par la CI, puis un merge.
 
-```bash
-cd api
-npm install
-npm run dev
-```
+Format des branches : `<type>/<description-courte-en-minuscules-avec-tirets>`
 
-```
-api/
-├── Dockerfile
-├── .dockerignore
-├── .env.example
-├── package.json
-├── package-lock.json
-└── src/
-    ├── server.js          # serveur Express et routes
-    └── data/
-        └── portfolio.js   # profil, projets, compétences
-```
+| Préfixe | Usage | Exemple |
+|---|---|---|
+| `feat/` | Nouvelle fonctionnalité | `feat/formulaire-contact` |
+| `fix/` | Correction de bug | `fix/validation-email` |
+| `docs/` | Documentation | `docs/readme-activite-6` |
+| `ci/` | Pipeline, workflows | `ci/dependabot-cooldown`, `ci/semantic-release` |
+| `build/` | Dockerfile, build | `build/api-multistage` |
+| `chore/` | Maintenance, dépendances | `chore/maj-dependances` |
+| `test/` | Tests | `test/echec-volontaire` |
 
-![Structure de l'API](docs/screenshots/29-api-structure.png)
+Pull Request avec tous les contrôles verts, prête à être mergée :
 
-![API démarrée](docs/screenshots/29-api-demarree.png)
+![Pull Request verte](docs/captures/q79-pr-verte.png)
 
-### 30. GET /api/health
+Après le merge (branche supprimée) :
 
-```bash
-curl http://192.168.190.141:4000/api/health
-```
+![Pull Request mergée](docs/captures/q79-pr-mergee.png)
 
-```json
-{ "status": "ok", "message": "API opérationnelle", "uptime": 512.55, "timestamp": "2026-10-20T11:52:39.385Z" }
-```
+## Q80 : protection de la branche principale
 
-![Route health](docs/screenshots/30-api-health.png)
+Un ruleset GitHub `protect-main` est actif sur la branche par défaut :
 
-![Route health avec curl](docs/screenshots/30-api-health-curl.png)
+- Pull Request obligatoire avant le merge (push direct interdit)
+- suppression de la branche interdite
+- force push interdit
+- liste de contournement (*bypass*) vide : même le propriétaire doit passer par une Pull Request
 
-### 31. GET /api/profile
+![Ruleset protect-main actif, liste de contournement vide](docs/captures/q80-ruleset-protect-main.png)
 
-Retourne le nom, le titre, la présentation et les contacts du portfolio.
+## Q81 : contrôles obligatoires avant le merge
 
-![Route profile](docs/screenshots/31-api-profile.png)
+Les six contrôles de la CI sont des *required status checks* : `tests-api`, `tests-frontend` (tests), `sast`, `secrets`, `dependencies` et `images` (construction et scan d'image).
 
-### 32. GET /api/projects
+![Contrôles obligatoires du ruleset](docs/captures/q80-ruleset-checks.png)
 
-Retourne la liste des projets (`slug`, `name`, `summary`, `description`, `tech`). Une route `GET /api/projects/:slug` retourne aussi le détail d'un projet.
+Pour le démontrer, une Pull Request (`test/echec-volontaire`) contient un test qui échoue volontairement. Les checks `tests-api` et `sast` sont en échec, `images` est ignoré, et le bouton **Merge pull request** reste grisé : le merge est bloqué.
 
-![Route projects](docs/screenshots/32-api-projects.png)
+![Pull Request bloquée par un contrôle en échec](docs/captures/q81-pr-bloquee.png)
 
-### 33. GET /api/skills
+![Détail de la Pull Request bloquée](docs/captures/q81-pr-bloquee-detail.png)
 
-![Route skills](docs/screenshots/33-api-skills.png)
+Cette Pull Request a ensuite été fermée sans merge. Le contrôle `sast` était aussi en échec pour une raison réelle : Semgrep demandait un `cooldown` dans la configuration de Dependabot. La correction est passée par une Pull Request normale (voir Q75).
 
-> **Problème rencontré** : l'API répondait en local mais pas depuis Windows (`ERR_CONNECTION_TIMED_OUT`). Le pare-feu UFW bloquait les ports. Solution : `sudo ufw allow 4000/tcp` et `sudo ufw allow 3000/tcp`.
->
-> ![Règles UFW](docs/screenshots/30-ufw-status.png)
+## Q82 : Conventional Commits
 
-### 34. Projets récupérés depuis l'API
+Les messages de commit suivent le format `type: description` :
 
-Les composants `About`, `Projects` et `Skills` ne lisent plus directement `data/` : ils appellent l'API côté serveur via `lib/api.js`.
+| Type | Effet sur la version | Exemple |
+|---|---|---|
+| `feat:` | MINOR | `feat: automatisation des releases avec semantic-release` |
+| `fix:` | PATCH | `fix: CORS restreint par défaut au frontend (alerte CodeQL)` |
+| `perf:` | PATCH | `perf: Dockerfile API multi-stage (image de 325 Mo à 149 Mo)` |
+| `ci:` | aucun | `ci: ajout du cooldown de 7 jours à Dependabot` |
+| `test:` | aucun | `test: échec volontaire pour démontrer le blocage` |
+| `docs:` | aucun | `docs: mise à jour du README` |
+| `chore(deps):` | aucun | commits générés par Dependabot |
 
-```js
-const API_URL = process.env.API_URL || "http://127.0.0.1:4000";
+Un changement incompatible s'écrit `feat!:` (ou avec un pied de message `BREAKING CHANGE:`) et déclenche une version MAJOR.
 
-async function fetchFromApi(path, fallback) {
-  try {
-    const res = await fetch(`${API_URL}${path}`, { cache: "no-store" });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return { data: await res.json(), source: "api" };
-  } catch (err) {
-    return { data: fallback, source: "local" };   // repli sur data/
-  }
-}
-```
+## Q83 : Semantic Versioning
 
-- Un badge **« Données fournies par l'API Express »** indique la source des données.
-- Si l'API est arrêtée, les données locales de `data/` sont affichées (badge rouge) : le site reste disponible.
-- Les pages utilisent `export const dynamic = "force-dynamic"` : l'API est appelée à chaque requête et non figée au moment du build. Le build (et donc le pipeline Jenkins) fonctionne même sans API.
-- Les projets « Automatisation avec Ansible » et « API Node.js / Express » n'existent que dans l'API : leur présence prouve que les données viennent bien de l'API.
+Format `MAJOR.MINOR.PATCH`. Un `fix:` ou un `perf:` incrémente le PATCH, un `feat:` le MINOR, un changement incompatible le MAJOR.
 
-![Projets depuis l'API](docs/screenshots/34-projects-api.png)
+| Version | Déclenchée par | Contenu |
+|---|---|---|
+| v1.0.0 | `feat:` (première release) | Automatisation des releases, correction CORS |
+| v1.0.1 | `perf:` (PATCH) | Dockerfile API multi-stage |
 
-### 35. Compétences récupérées depuis l'API
+![Release v1.0.1](docs/captures/q83-release-v1.0.1.png)
 
-![Compétences depuis l'API](docs/screenshots/35-skills-api.png)
+## Q84 : semantic-release
+
+Le fichier `.releaserc.json` active trois plugins : `commit-analyzer` (calcule la version à partir des commits), `release-notes-generator` (génère le changelog) et `github` (crée le tag et la release). Le workflow `.github/workflows/release.yml` se lance à chaque merge sur `main`.
+
+Comme `main` est protégée, le robot ne commite aucun fichier : le changelog est publié dans les notes de la release.
+
+![Release générée automatiquement (v1.0.0)](docs/captures/q84-release-v1.0.0.png)
+
+![Exécution du workflow Release](docs/captures/q84-workflow-release.png)
 
 ---
 
-## IX. Variables d'environnement et configuration
+# Section 19 : optimisation des images (Q85–89)
 
-### 36. API_URL
+## Q85 : état initial
 
-`.env.local` (non versionné) :
+| Image | Taille (contenu) | Temps de build (`--no-cache`) | Vulnérabilités HIGH/CRITICAL (Trivy) |
+|---|---|---|---|
+| API (Dockerfile à un seul stage) | 325 Mo (1,22 Go sur disque) | 2 min 06 s | 12 (12 HIGH, 0 CRITICAL) |
+| Frontend (déjà multi-stage, mode `standalone`) | 85,7 Mo (334 Mo sur disque) | non mesuré | non mesuré |
 
-```
-API_URL=http://127.0.0.1:4000
-```
+## Q86 : Dockerfiles multi-stage
 
-**Pourquoi ne pas coder l'URL en dur ?** L'adresse de l'API change selon l'environnement : `127.0.0.1:4000` en local, `http://api:4000` dans Docker Compose, un nom de domaine en production. Coder l'URL en dur obligerait à modifier le code et reconstruire l'image à chaque changement. Avec une variable d'environnement, la même image fonctionne partout et la configuration reste séparée du code. L'appel se faisant côté serveur, `API_URL` n'est jamais exposée au navigateur.
-
-> `127.0.0.1` est utilisé plutôt que `localhost`, que Node.js 22 peut résoudre en IPv6 (`::1`).
-
-### 37. .env.example
-
-`.env.example` (versionné, sans secret) :
-
-```
-# URL de l'API Express, appelée côté serveur par Next.js
-# Local          : http://127.0.0.1:4000
-# Docker Compose : http://api:4000
-API_URL=http://127.0.0.1:4000
-```
-
-`api/.env.example` :
-
-```
-PORT=4000
-CORS_ORIGIN=http://localhost:3000
-```
-
-Le `.gitignore` contient `.env*` puis `!.env.example` : les vrais fichiers `.env` ne sont jamais poussés sur GitHub.
-
----
-
-## X. Dockerisation frontend + API
-
-### 38. Dockerfile du frontend
-
-`next.config.mjs` contient `output: "standalone"`.
+Le Dockerfile du frontend Next.js était déjà en trois stages (`deps`, `builder`, `runner`). Celui de l'API est passé de un à trois stages :
 
 ```dockerfile
-# 1) Installation des dépendances
+# 1) Dépendances de production uniquement
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000 --fetch-timeout=600000
+RUN npm ci --omit=dev && npm cache clean --force
 
-# 2) Build de l'application
-FROM node:22-alpine AS builder
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
-ENV NEXT_TELEMETRY_DISABLED=1
-RUN npm run build
+# 2) Génération du client Prisma
+FROM deps AS build
+RUN apk add --no-cache openssl
+COPY prisma ./prisma
+RUN npx prisma generate
 
-# 3) Image finale minimale (mode standalone)
-FROM node:22-alpine AS runner
-WORKDIR /app
-ENV NODE_ENV=production \
-    NEXT_TELEMETRY_DISABLED=1 \
-    PORT=3000 \
-    HOSTNAME=0.0.0.0
-
-RUN addgroup -S nextjs && adduser -S nextjs -G nextjs
-
-COPY --from=builder /app/public ./public
-COPY --from=builder --chown=nextjs:nextjs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nextjs /app/.next/static ./.next/static
-
-USER nextjs
-EXPOSE 3000
-CMD ["node", "server.js"]
-```
-
-- **Build multi-étapes** : l'image finale contient seulement l'application compilée, sans code source ni dépendances de développement (image plus légère, surface d'attaque réduite).
-- **Utilisateur non root** `nextjs` (bonne pratique DevSecOps).
-- `.dockerignore` exclut `node_modules`, `.git`, `.env*`, `api/`, `ansible/` et `docs/`.
-- Les options `--fetch-retries` rendent `npm ci` tolérant à une connexion lente.
-
-### 39. Dockerfile de l'API
-
-`api/Dockerfile` :
-
-```dockerfile
-FROM node:22-alpine
+# 3) Image finale minimale
+FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+RUN apk add --no-cache openssl \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
-COPY package*.json ./
-RUN npm ci --omit=dev
-
-COPY src ./src
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --chown=node:node package*.json ./
+COPY --chown=node:node prisma ./prisma
+COPY --chown=node:node src ./src
 
 USER node
 EXPOSE 4000
-CMD ["node", "src/server.js"]
+CMD ["sh", "-c", "./node_modules/.bin/prisma migrate deploy && node src/server.js"]
 ```
 
-- `--omit=dev` : seules les dépendances de production sont installées (pas de nodemon).
-- `package*.json` est copié avant le code pour profiter du cache Docker.
-- Exécution avec l'utilisateur non root `node`.
+Les gains viennent de trois changements :
 
-### 40. Construction des images
+1. `COPY --chown` remplace `RUN chown -R`, qui créait une couche dupliquant tout `node_modules`.
+2. L'image finale ne contient que `node_modules`, `prisma` et `src`, sans cache npm.
+3. npm et npx sont retirés de l'image finale : ils embarquent leurs propres dépendances (par exemple `brace-expansion`), source de vulnérabilités, et ne servent pas à l'exécution. Prisma est lancé directement depuis `node_modules/.bin`.
+
+L'image a été testée avec une base PostgreSQL : les migrations s'appliquent et l'API démarre (« API démarrée sur http://localhost:4000 »).
+
+![Pull Request du Dockerfile multi-stage](docs/captures/q86-pr-multistage-mergee.png)
+
+## Q87 : comparaison avant / après (API)
+
+| Indicateur | Avant | Après | Évolution |
+|---|---|---|---|
+| Taille (contenu) | 325 Mo | **149 Mo** | −54 % |
+| Taille sur disque | 1,22 Go | **595 Mo** | −51 % |
+| Temps de build (`--no-cache`) | 2 min 06 s | **1 min 02 s** | −51 % |
+| Vulnérabilités HIGH/CRITICAL | 12 | **2** | −83 % |
+
+Les temps dépendent du réseau et des couches déjà téléchargées. La baisse des vulnérabilités vient surtout du retrait de npm de l'image finale : réduire l'image réduit aussi la surface d'attaque.
+
+## Q88 : BuildKit et Buildx
+
+Les builds utilisent Docker Buildx avec BuildKit (builder `multiarch-host`, pilote `docker-container`, BuildKit v0.33.1).
+
+![Version de Buildx et builders disponibles](docs/captures/q88-buildx.png)
+
+## Q89 : image multi-architecture (amd64 et arm64)
+
+L'émulation `arm64` est installée avec `tonistiigi/binfmt` (QEMU) :
+
+![Émulation arm64 installée](docs/captures/q89-binfmt-arm64.png)
+
+Construction et publication dans un registre local temporaire :
 
 ```bash
-docker build -t devsecops-api ./api
-docker build --network=host -t devsecops-portfolio .
-docker images | grep devsecops
+docker buildx build --builder multiarch-host \
+  --platform linux/amd64,linux/arm64 \
+  -t localhost:5000/devsecops-api:1.0.1 --push ./api
+docker buildx imagetools inspect localhost:5000/devsecops-api:1.0.1
 ```
 
-![Images Docker](docs/screenshots/40-docker-images.png)
+Résultat : un index OCI avec deux manifestes (`linux/amd64` et `linux/arm64`). Les deux entrées `unknown/unknown` de type `attestation-manifest` sont les attestations de provenance et de SBOM ajoutées automatiquement par BuildKit.
 
-> **Problème rencontré** : `npm ci` restait bloqué (`ETIMEDOUT`) pendant le build, à cause du réseau de la VM (k3s y est aussi installé). Solution : build avec le réseau de l'hôte (`--network=host`, ou `network: host` dans le Compose).
-
-### 41. Docker Compose
-
-`docker-compose.yml` :
-
-```yaml
-services:
-  api:
-    build:
-      context: ./api
-      network: host
-    image: devsecops-api
-    container_name: devsecops-api
-    environment:
-      - PORT=4000
-      - CORS_ORIGIN=http://localhost:3000
-    ports:
-      - "4000:4000"
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/api/health"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-    networks:
-      - portfolio-net
-    restart: unless-stopped
-
-  frontend:
-    build:
-      context: .
-      network: host
-    image: devsecops-portfolio
-    container_name: devsecops-portfolio
-    environment:
-      - API_URL=http://api:4000
-    ports:
-      - "3000:3000"
-    depends_on:
-      api:
-        condition: service_healthy
-    networks:
-      - portfolio-net
-    restart: unless-stopped
-
-networks:
-  portfolio-net:
-    driver: bridge
-```
-
-```bash
-docker compose up -d
-docker compose ps
-```
-
-```
-NAME                  IMAGE                 SERVICE    STATUS                    PORTS
-devsecops-api         devsecops-api         api        Up (healthy)              0.0.0.0:4000->4000/tcp
-devsecops-portfolio   devsecops-portfolio   frontend   Up                        0.0.0.0:3000->3000/tcp
-```
-
-Le `healthcheck` vérifie `/api/health` ; grâce à `depends_on: condition: service_healthy`, le frontend ne démarre qu'une fois l'API prête.
-
-![docker compose ps](docs/screenshots/41-compose-ps.png)
-
-### 42. Communication frontend ↔ API
-
-Dans Compose, `API_URL=http://api:4000` : **`api` est le nom du service**, résolu par le DNS interne de Docker sur le réseau `portfolio-net`. Le frontend joint l'API sans connaître son adresse IP.
-
-```bash
-docker compose exec frontend wget -qO- http://api:4000/api/health
-```
-
-```json
-{"status":"ok","message":"API opérationnelle","uptime":168.75,"timestamp":"2026-10-20T14:14:33.164Z"}
-```
-
-![Frontend vers API par le nom de service](docs/screenshots/42-wget-api.png)
-
-![Portfolio alimenté par l'API](docs/screenshots/42-portfolio-api.png)
-
-Démonstration du repli : `docker compose stop api` → le portfolio affiche les données locales ; `docker compose start api` → les données de l'API reviennent.
+![Résultat de docker buildx imagetools inspect](docs/captures/q89-imagetools-inspect.png)
 
 ---
 
-# Activité 4 : Vagrant/Ansible, sécurisation de l'API, PostgreSQL, tests et pipeline DevSecOps
+# Section 20 : registre privé Harbor (Q90–93)
 
-## Avancement
+## Q90 : installation de Harbor
 
-| Partie | Questions | État |
+Harbor v2.14.6 est installé avec l'installeur en ligne sur la VM, avec le scanner Trivy intégré (`./install.sh --with-trivy`). Il est accessible sur `http://192.168.190.141:8085`. Le port 8085 a été choisi car 8081 (Jenkins) et 8082 (autre application) sont déjà utilisés. Le lab utilise HTTP : Docker déclare ce registre dans `insecure-registries`. En production, il faudrait activer TLS.
+
+![Installation de Harbor réussie](docs/captures/q90-harbor-installation.png)
+
+![Harbor : liste des projets](docs/captures/q90-harbor-projets.png)
+
+## Q91 : images publiées dans Harbor
+
+| Image | Nom complet | Tag |
 |---|---|---|
-| 11. Vagrant + Ansible | 43 | ✅ fait |
-| | 44-45 | 🔄 en cours (captures `vagrant up` / `destroy` à ajouter) |
-| 12. API sécurisée | 46-52 | ✅ fait |
-| 13. PostgreSQL / Prisma | 53-56 | ✅ fait |
-| 14. Tests | 57-60 | ✅ fait |
-| 15. Jenkins tests + images | 61-63 | 🔄 stages tests OK, build/tag SHA à finaliser |
-| 16. Pipeline DevSecOps | 64-69 | 🔄 en cours (Gitleaks OK, Semgrep/npm audit/Dependency-Check/Trivy à finaliser) |
+| API | `192.168.190.141:8085/devsecops/api` | `eca768d` (SHA du commit) |
+| API optimisée | `192.168.190.141:8085/devsecops/api` | `multistage` |
+| Frontend | `192.168.190.141:8085/devsecops/portfolio` | `eca768d` (SHA du commit) |
 
----
+![Dépôts du projet devsecops](docs/captures/q91-harbor-depots.png)
 
-## 11. Vagrant + Ansible
+<!-- À compléter : publication automatique depuis le pipeline Jenkins (étape Push Harbor avec l'identifiant harbor-robot) -->
 
-### Q43 : playbook de déploiement du Portfolio
+## Q92 : permissions RBAC
 
-```bash
-cd ~/portfolio-iac
-vagrant provision        # lance : ansible-playbook ansible/site.yml
-```
+- Projet `devsecops` **privé** (aucun téléchargement anonyme).
+- Utilisateur `developpeur` avec le rôle **Développeur** (peut envoyer et télécharger des images, sans droits d'administration).
+- Compte robot `robot$devsecops+pipeline` pour le pipeline : droits **Lister, Pull et Push** sur les dépôts uniquement (pas de suppression), expiration à 30 jours. Son secret est stocké dans un identifiant Jenkins (`harbor-robot`), jamais dans le dépôt.
 
-Le playbook (`vagrant/ansible/site.yml`) utilise deux rôles : `docker_install` (Docker + plugin Compose) et `portfolio_deploy` (clone du dépôt, `docker compose up -d --build`, attente du port 3000, affichage de `docker ps`).
+![Compte robot du pipeline](docs/captures/q92-harbor-robot.png)
 
-![Playbook Ansible](docs/captures/q43-ansible-playbook.png)
-![Portfolio accessible](docs/captures/q43-portfolio-accessible.png)
+## Q93 : scan automatique Harbor et comparaison avec Trivy
 
-### Q44 : lancement automatique d'Ansible par Vagrant
+Le scan automatique à l'envoi est activé dans la configuration du projet. Harbor utilise Trivy, la même base de vulnérabilités que le pipeline.
 
-`vagrant up` -> création de la VM -> provisioner `ansible_local` -> installation de Docker -> déploiement du Portfolio.
+![Résultat du scan de l'image API](docs/captures/q93-harbor-scan-artefact.png)
 
-![Automatisation complète](docs/captures/q44-vagrant-ansible-auto.png)
+![Détail des vulnérabilités](docs/captures/q93-harbor-scan-details.png)
 
-### Q45 : destroy puis up
-
-```bash
-vagrant destroy -f
-vagrant up
-```
-> Capture à ajouter.
-
----
-
-## 12. Évolution et sécurisation de l'API
-
-### Q46 : route `POST /api/contact`
-
-```bash
-curl -i -X POST http://localhost:4000/api/contact \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Soulayma","email":"test@example.com","message":"Bonjour, ceci est un test"}'
-```
-Réponse : `HTTP/1.1 201 Created` — `{"message":"Message reçu","id":1}`
-
-![201 Created](docs/captures/q46-post-contact-201.png)
-
-### Q47 : formulaire Next.js connecté à l'API
-
-Le formulaire (`components/Contact.jsx`) appelle `app/api/contact/route.js`, qui relaie vers l'API Express (`API_URL`).
-
-![Envoi réussi](docs/captures/q47-formulaire-succes.png)
-
-### Q48 : validation stricte avec Zod
-
-Schéma `.strict()` : champs inconnus, email invalide ou message trop court -> `400`.
-
-![Requête refusée (Zod)](docs/captures/q48-zod-400.png)
-
-### Q49 : gestion centralisée des erreurs
-
-Un seul middleware d'erreur renvoie un JSON propre, sans stack trace (ex. JSON malformé -> 400).
-
-![Erreur centralisée](docs/captures/q49-erreur-json-400.png)
-
-### Q50 : headers de sécurité Helmet
-
-```bash
-curl -I http://localhost:4000/api/health
-```
-![Headers Helmet](docs/captures/q50-helmet-headers.png)
-
-### Q51 : rate limiting (5 requêtes / 15 min sur `POST /api/contact`)
-
-Les 5 premières requêtes passent (201), la 6e est refusée (429).
-
-![Script 201 puis 429](docs/captures/q51-rate-limit-429-script.png)
-![Réponse 429](docs/captures/q51-rate-limit-429-detail.png)
-
-### Q52 : OWASP API Security Top 10
-
-| Risque OWASP | Concerne notre API ? | Mesure en place / prévue |
+| | Pipeline (Trivy) | Harbor (Trivy) |
 |---|---|---|
-| API1 Broken Object Level Authorization | Faible (pas de comptes utilisateurs) | Aucune ressource privée exposée ; à prévoir si authentification ajoutée |
-| API2 Broken Authentication | Non (API publique en lecture) | Prévu : authentification pour toute future route d'administration |
-| API3 Broken Object Property Level Authorization | Oui | Zod `.strict()` : seuls `name`, `email`, `message` sont acceptés |
-| API4 Unrestricted Resource Consumption | Oui | Rate limiting 5/15 min sur `/api/contact` ; corps JSON limité à 10 kb |
-| API5 Broken Function Level Authorization | Faible | Seules des routes GET publiques + un POST de contact |
-| API6 Unrestricted Access to Sensitive Business Flows | Oui (spam du formulaire) | Rate limiting ; prévu : captcha |
-| API7 Server Side Request Forgery | Non | L'API n'appelle aucune URL fournie par l'utilisateur |
-| API8 Security Misconfiguration | Oui | Helmet, `x-powered-by` désactivé, CORS restreint (`CORS_ORIGIN`), erreurs sans stack trace, secrets en variables d'environnement |
-| API9 Improper Inventory Management | Faible | Routes documentées dans ce README |
-| API10 Unsafe Consumption of APIs | Non | Aucune API tierce consommée |
+| Filtre de gravité | `CRITICAL` uniquement, bloque le build | Toutes gravités affichées |
+| Résultat sur `api:eca768d` | 0 critique, le build passe | 25 vulnérabilités au total, gravité maximale **Haute**, aucune critique |
+| Moment du scan | Avant la livraison | Après la publication, à chaque envoi |
 
----
+Les deux outils sont d'accord (aucune vulnérabilité critique). La différence de nombre vient du filtre de gravité, pas du moteur. Les paquets concernés sont `brace-expansion` (embarqué dans npm), `body-parser` et `deepmerge-ts`.
 
-## 13. PostgreSQL et Prisma
-
-### Q53 : service PostgreSQL dans Docker Compose
-
-Service `db` : image `postgres:16-alpine`, healthcheck `pg_isready`, volume `pgdata`.
-
-![docker-compose.yml](docs/captures/q53-docker-compose-yml.png)
-![docker compose ps](docs/captures/q53-compose-ps-env-example.png)
-
-### Q54 : enregistrement des messages en base
-
-```bash
-docker compose exec db psql -U portfolio -d portfolio -c 'SELECT * FROM "Message";'
-```
-![Données en table](docs/captures/q54-select-message.png)
-![Deux lignes](docs/captures/q54-select-message-2lignes.png)
-
-### Q55 : migrations Prisma
-
-```bash
-cd api
-npx prisma migrate dev --name init     # développement
-npx prisma migrate deploy              # production (lancé au démarrage du conteneur API)
-```
-![Migration](docs/captures/q55-prisma-migrate.png)
-
-### Q56 : variables dans `.env.example`
-
-`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL` (valeurs factices uniquement ; le vrai `.env` n'est pas versionné).
-
-![.env.example](docs/captures/q56-env-example.png)
-
----
-
-## 14. Tests applicatifs
-
-### Q57 : test frontend (Vitest + Testing Library)
-
-```bash
-npm test
-```
-3 tests passés (`tests/Contact.test.jsx`).
-
-![Tests frontend](docs/captures/q57-test-frontend-vitest.png)
-
-### Q58-59 : tests API (Jest + Supertest) : route, entrées invalides, injections, requêtes malformées
-
-```bash
-cd api && npm test
-```
-17 tests passés (`api.test.js`, `security.test.js`).
-
-![Tests API](docs/captures/q58-59-tests-api-jest.png)
-
-### Q60 : test d'intégration frontend -> API -> PostgreSQL
-
-```bash
-npm run test:integration     # bash tests/integration.sh
-```
-![Intégration](docs/captures/q60-test-integration.png)
-
----
-
-## 15-16. Jenkins et pipeline DevSecOps
-
-Le `Jenkinsfile` enchaîne : Checkout + Git SHA, Tests API, Tests Frontend (conteneur `node:22-alpine`), Gitleaks, Semgrep, npm audit, Dependency-Check, build des images `devsecops-portfolio:<SHA>` et `devsecops-api:<SHA>`, Trivy (échec si CRITICAL).
-
-![Jenkins](docs/captures/q61-jenkins-build.png)
-
----
-
-# Activité 4 : compléments (Vagrant, Jenkins, pipeline DevSecOps)
-
-## Q44 et Q45 : Vagrant, Ansible et redéploiement automatique
-
-`vagrant up` crée la VM, lance Ansible (`ansible_local`), installe Docker, puis déploie le Portfolio avec Docker Compose. Test de la Q45 : la VM est détruite puis recréée, et le Portfolio est redéployé sans intervention.
-
-```bash
-cd ~/portfolio-iac
-vagrant destroy -f
-vagrant up
-```
-
-Résultat : `PLAY RECAP` avec `ok=9 changed=4 failed=0`.
-
-![PLAY RECAP](docs/captures/q44-vagrant-up-recap.png)
-
-Portfolio accessible après le redéploiement :
-
-![Portfolio redéployé](docs/captures/q45-portfolio-redeploye.png)
-
-## Q61 à Q69 : pipeline Jenkins
-
-Le `Jenkinsfile` exécute : tests de l'API et du frontend, Gitleaks, Semgrep, npm audit, Dependency-Check (non bloquant), build des images `devsecops-portfolio` et `devsecops-api` taguées avec le Git SHA, puis Trivy.
-
-| Question | Outil | Résultat |
-|---|---|---|
-| Q64 | Gitleaks | Aucun secret détecté |
-| Q65 | Semgrep | 0 finding (un faux positif CSRF a été justifié avec `nosemgrep`, car l'API est stateless) |
-| Q66 | npm audit | 0 vulnérabilité critique (Next.js mis à jour de 16.4.0 vers 16.4.3) |
-| Q67 | Dependency-Check | Configuré et non bloquant : la base NVD exige une clé API, indisponible dans le lab. La détection est assurée par `npm audit` |
-| Q68 | Trivy | Aucune vulnérabilité CRITICAL dans les deux images |
-
-Exemple de dépendances vulnérables détectées (Q67) :
-
-![npm audit](docs/captures/q67-npm-audit.png)
-
-### Q69 : pipeline réussi et pipeline échoué
-
-Le pipeline échoue dès qu'un secret ou une vulnérabilité critique est détecté. Sur la capture : le build **#10 est réussi** et le build **#9 a échoué** (Trivy). Le build #6 avait aussi échoué sur Semgrep (faux positif CSRF).
-
-![Jenkins : build réussi et build échoué](docs/captures/q61-jenkins-job.png)
-
-> Captures des stages complets, des images taguées par SHA (Q63), des scanners (Q64-68) et des pipelines réussi/échoué (Q69) : à compléter.
+<!-- À compléter : résultat du scan de l'image api:multistage (comparaison avant/après dans Harbor) -->
