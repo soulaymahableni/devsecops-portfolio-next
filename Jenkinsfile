@@ -126,5 +126,20 @@ pipeline {
         }
       }
     }
+
+    // Q96 : SBOM de chaque image (Syft), conservé comme artefact du build
+    stage('SBOM Syft') {
+      steps {
+        sh '''
+          set -e
+          mkdir -p sbom
+          for img in api portfolio; do
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock anchore/syft:latest devsecops-$img:$SHA -o spdx-json > sbom/$img-$SHA.spdx.json
+          done
+          ls -lh sbom
+        '''
+        archiveArtifacts artifacts: 'sbom/*.json', fingerprint: true
+      }
+    }
   }
 }
