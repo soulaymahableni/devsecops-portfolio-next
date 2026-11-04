@@ -108,5 +108,23 @@ pipeline {
         sh 'docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache/ aquasec/trivy:latest image --skip-db-update --skip-java-db-update --scanners vuln --timeout 30m --severity CRITICAL --exit-code 1 devsecops-api:$SHA'
       }
     }
+
+    // Q91 : publication des images dans Harbor (uniquement si Trivy a réussi)
+    stage('Push Harbor') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'harbor-robot', usernameVariable: 'HARBOR_USER', passwordVariable: 'HARBOR_PASS')]) {
+          sh '''
+            set -e
+            REG=192.168.190.141:8085/devsecops
+            echo "$HARBOR_PASS" | docker login 192.168.190.141:8085 -u "$HARBOR_USER" --password-stdin
+            trap 'docker logout 192.168.190.141:8085' EXIT
+            docker tag devsecops-portfolio:$SHA $REG/portfolio:$SHA
+            docker tag devsecops-api:$SHA $REG/api:$SHA
+            docker push $REG/portfolio:$SHA
+            docker push $REG/api:$SHA
+          '''
+        }
+      }
+    }
   }
 }
