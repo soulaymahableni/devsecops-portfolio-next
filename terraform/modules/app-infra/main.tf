@@ -16,6 +16,9 @@ resource "aws_kms_key" "data" {
 resource "aws_s3_bucket" "assets" {
   bucket = "${local.prefix}-assets"
   tags   = local.tags
+
+  # Q135 : permet de détruire la plateforme même si le bucket contient des messages archivés
+  force_destroy = true
 }
 
 # Aucun accès public possible (AWS-0086, 0087, 0091, 0093)

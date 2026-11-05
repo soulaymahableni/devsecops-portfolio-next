@@ -48,3 +48,6 @@ next-env.d.ts
 *.tfstate.*
 crash.log
 *.tfplan
+
+# Automatisation (sorties Terraform générées)
+automation/generated/

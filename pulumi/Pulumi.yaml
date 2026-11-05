@@ -1,0 +1,7 @@
+name: portfolio-pulumi
+description: Bucket S3 dans Floci avec Pulumi (Python)
+runtime:
+  name: python
+  options:
+    toolchain: pip
+    virtualenv: venv
