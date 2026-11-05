@@ -4,6 +4,7 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const { z } = require("zod");
 const prisma = require("./db");
+const { publishContact } = require("./aws");
 const { profile, projects, skills } = require("./data/portfolio");
 
 const app = express(); // nosemgrep: javascript.express.security.audit.express-check-csurf-middleware-usage.express-check-csurf-middleware-usage -- API JSON stateless, sans cookie ni session : CSRF non applicable
@@ -65,7 +66,16 @@ app.post("/api/contact", contactLimiter, async (req, res, next) => {
   // Q54 : l'enregistrement en base viendra ici
   try {
     const saved = await prisma.message.create({ data: result.data });
-    res.status(201).json({ message: "Message reçu", id: saved.id });
+    // Q114 : archive S3 + notification SQS (Floci). Un échec ne bloque pas la réponse.
+    let notification = "désactivée";
+    try {
+      const sent = await publishContact({ id: saved.id, ...result.data });
+      if (sent.enabled) notification = "envoyée";
+    } catch (awsErr) {
+      notification = "échec";
+      console.warn("Service AWS indisponible :", awsErr.name);
+    }
+    res.status(201).json({ message: "Message reçu", id: saved.id, notification });
   } catch (err) {
     next(err);
   }
