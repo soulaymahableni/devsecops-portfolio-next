@@ -30,6 +30,33 @@ jobs:
           npx prisma generate
           npm test
 
+  # Q116 : tests d'intégration avec Floci (AWS émulé), sans compte AWS
+  tests-integration-floci:
+    runs-on: ubuntu-latest
+    services:
+      floci:
+        # Floci v2.4.0, épinglé par empreinte (comme les actions, voir Q77)
+        image: floci/floci@sha256:5ee85db604c4aa74ac76e07ea5cc83086f37bb472bf3dbb97e34019e48efae9c
+        ports:
+          - 4566:4566
+    env:
+      AWS_ENDPOINT_URL: http://localhost:4566
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Attendre Floci
+        run: curl -sf --retry 30 --retry-connrefused --retry-delay 2 http://localhost:4566/_floci/health > /dev/null
+      - name: Tests d'intégration (S3 + SQS)
+        working-directory: api
+        run: |
+          npm ci
+          npm run test:integration
+
   # Q70 : tests frontend
   tests-frontend:
     runs-on: ubuntu-latest

@@ -17,6 +17,15 @@ services:
       - portfolio-net
     restart: unless-stopped
 
+  floci:
+    image: floci/floci:latest
+    container_name: devsecops-floci
+    ports:
+      - "4566:4566"
+    networks:
+      - portfolio-net
+    restart: unless-stopped
+
   api:
     build: ./api
     image: devsecops-api
@@ -25,10 +34,17 @@ services:
       - PORT=4000
       - CORS_ORIGIN=http://localhost:3000
       - DATABASE_URL=postgresql://${POSTGRES_USER:-portfolio}:${POSTGRES_PASSWORD:-change_me_dev_only}@db:5432/${POSTGRES_DB:-portfolio}?schema=public
+      # Q114/Q115 : AWS émulé en local (Floci), identifiants fictifs
+      - AWS_ENDPOINT_URL=http://floci:4566
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
     ports:
       - "4000:4000"
     depends_on:
       db:
+        condition: service_healthy
+      floci:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/api/health"]
