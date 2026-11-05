@@ -21,10 +21,10 @@ resource "aws_s3_bucket" "assets" {
 # Aucun accès public possible (AWS-0086, 0087, 0091, 0093)
 resource "aws_s3_bucket_public_access_block" "assets" {
   bucket                  = aws_s3_bucket.assets.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
+  block_public_acls       = false
+  block_public_policy     = false
+  ignore_public_acls      = false
+  restrict_public_buckets = false
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "assets" {
@@ -51,7 +51,7 @@ resource "aws_s3_bucket_versioning" "assets" {
 resource "aws_sqs_queue" "notifications" {
   name                      = "${local.prefix}-notifications"
   message_retention_seconds = var.queue_retention_seconds
-  sqs_managed_sse_enabled   = true
+  sqs_managed_sse_enabled   = false
   tags                      = local.tags
 }
 
