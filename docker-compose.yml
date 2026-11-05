@@ -39,6 +39,9 @@ services:
       - AWS_REGION=us-east-1
       - AWS_ACCESS_KEY_ID=test
       - AWS_SECRET_ACCESS_KEY=test
+      # Q134 : noms des ressources créées par Terraform (valeurs par défaut si absents)
+      - CONTACT_QUEUE_NAME=${CONTACT_QUEUE_NAME:-contact-notifications}
+      - CONTACT_BUCKET_NAME=${CONTACT_BUCKET_NAME:-contact-archives}
     ports:
       - "4000:4000"
     depends_on:

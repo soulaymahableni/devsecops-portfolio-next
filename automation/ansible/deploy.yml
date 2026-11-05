@@ -1,0 +1,42 @@
+---
+# Q134 : Ansible configure la plateforme à partir des sorties de Terraform
+- name: Déployer le portfolio avec les ressources créées par Terraform
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    repo_dir: "{{ lookup('env', 'HOME') }}/devsecops-portfolio-next"
+    tf: "{{ lookup('file', repo_dir + '/automation/generated/tf.json') | from_json }}"
+
+  tasks:
+    - name: Vérifier que Docker est disponible
+      ansible.builtin.command: docker --version
+      register: docker_version
+      changed_when: false
+
+    - name: Afficher les ressources créées par Terraform
+      ansible.builtin.debug:
+        msg:
+          - "{{ docker_version.stdout }}"
+          - "Bucket S3 : {{ tf.bucket_name.value }}"
+          - "File SQS : {{ tf.queue_url.value }}"
+          - "Table DynamoDB : {{ tf.table_name.value }}"
+
+    - name: Démarrer la pile (base, API, frontend) avec ces ressources
+      ansible.builtin.command: docker compose up -d --build
+      args:
+        chdir: "{{ repo_dir }}"
+      environment:
+        CONTACT_BUCKET_NAME: "{{ tf.bucket_name.value }}"
+        CONTACT_QUEUE_NAME: "{{ tf.queue_url.value | basename }}"
+      changed_when: true
+
+    - name: Attendre que l'API réponde
+      ansible.builtin.uri:
+        url: http://localhost:4000/api/health
+        status_code: 200
+      register: health
+      retries: 30
+      delay: 5
+      until: health.status == 200
