@@ -120,8 +120,8 @@ pipeline {
             trap 'docker logout 192.168.190.141:8085' EXIT
             docker tag devsecops-portfolio:$SHA $REG/portfolio:$SHA
             docker tag devsecops-api:$SHA $REG/api:$SHA
-            docker push $REG/portfolio:$SHA
-            docker push $REG/api:$SHA
+            docker push $REG/portfolio:$SHA 2>&1 | tee push-portfolio.log
+            docker push $REG/api:$SHA 2>&1 | tee push-api.log
           '''
         }
       }
@@ -158,7 +158,7 @@ pipeline {
             REG=192.168.190.141:8085
             echo "$HARBOR_PASS" | docker login $REG -u "$HARBOR_USER" --password-stdin
             for img in api portfolio; do
-              DIGEST=$(curl -sI -u "$HARBOR_USER:$HARBOR_PASS" -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" http://$REG/v2/devsecops/$img/manifests/$SHA | grep -i docker-content-digest | awk '{print $2}' | tr -d '\\r')
+              DIGEST=$(grep -o 'digest: sha256:[a-f0-9]*' push-$img.log | tail -1 | awk '{print $2}')
               test -n "$DIGEST"
               cosign sign --key "$COSIGN_KEY_FILE" --use-signing-config=false --tlog-upload=false --new-bundle-format=false --allow-http-registry --allow-insecure-registry $REG/devsecops/$img@$DIGEST
               cosign verify --key cosign.pub --insecure-ignore-tlog --allow-http-registry --allow-insecure-registry $REG/devsecops/$img@$DIGEST
