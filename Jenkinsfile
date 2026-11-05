@@ -141,5 +141,31 @@ pipeline {
         archiveArtifacts artifacts: 'sbom/*.json', fingerprint: true
       }
     }
+
+    // Q103 : signature Cosign des images publiées, puis vérification (échec si non signée)
+    stage('Sign Cosign') {
+      steps {
+        withCredentials([
+          usernamePassword(credentialsId: 'harbor-robot', usernameVariable: 'HARBOR_USER', passwordVariable: 'HARBOR_PASS'),
+          file(credentialsId: 'cosign-key', variable: 'COSIGN_KEY_FILE'),
+          string(credentialsId: 'cosign-password', variable: 'COSIGN_PASSWORD')
+        ]) {
+          sh '''
+            set -e
+            export PATH=$PATH:/var/jenkins_home/bin
+            export DOCKER_CONFIG=$(mktemp -d)
+            trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+            REG=192.168.190.141:8085
+            echo "$HARBOR_PASS" | docker login $REG -u "$HARBOR_USER" --password-stdin
+            for img in api portfolio; do
+              DIGEST=$(curl -sI -u "$HARBOR_USER:$HARBOR_PASS" -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" http://$REG/v2/devsecops/$img/manifests/$SHA | grep -i docker-content-digest | awk '{print $2}' | tr -d '\\r')
+              test -n "$DIGEST"
+              cosign sign --key "$COSIGN_KEY_FILE" --use-signing-config=false --tlog-upload=false --new-bundle-format=false --allow-http-registry --allow-insecure-registry $REG/devsecops/$img@$DIGEST
+              cosign verify --key cosign.pub --insecure-ignore-tlog --allow-http-registry --allow-insecure-registry $REG/devsecops/$img@$DIGEST
+            done
+          '''
+        }
+      }
+    }
   }
 }
