@@ -1278,6 +1278,247 @@ Une règle de rétention est définie sur le projet `devsecops` : **garder les i
 
 **Choix :** GHCR convient pour publier rapidement des images liées à un dépôt GitHub. Harbor est préférable quand on veut garder les images en interne et appliquer ses propres politiques (scan, rétention, signature obligatoire). Dans ce projet, Harbor est le registre de référence parce qu'il applique ces politiques de sécurité dans le registre lui-même.
 
+# Section 21 : Software Supply Chain (Q96 à Q105)
+
+Cette section protège la chaîne qui va du code à l'image déployée : on sait **ce qu'il y a dans une image** (SBOM), **qui l'a produite** (signature et provenance) et on **refuse tout ce qui n'est pas signé**.
+
+```mermaid
+flowchart LR
+  A[Commit GitHub] --> B[Jenkins : tests et scans]
+  B --> C[Build des images]
+  C --> D[Trivy]
+  D --> E[Push vers Harbor]
+  E --> F[SBOM Syft<br/>SPDX JSON]
+  E --> G[Signature Cosign<br/>puis cosign verify]
+  F --> H[(Artefacts Jenkins<br/>et release GitHub)]
+  G --> I[Harbor<br/>Cosign : seulement les images vérifiées]
+  I -->|signée| J[pull autorisé]
+  I -->|non signée| K[412 refusé]
+  A --> L[GitHub Actions<br/>attestation de provenance SLSA]
+```
+
+## Q96 : SBOM de chaque image avec Syft
+
+Un SBOM (Software Bill of Materials) est l'inventaire de tout ce que contient une image : paquets système, dépendances npm, versions. Il sert à savoir très vite si une image contient une bibliothèque touchée par une nouvelle vulnérabilité.
+
+L'étape `SBOM Syft` du `Jenkinsfile` s'exécute après `Push Harbor`. Syft tourne dans son image Docker officielle (rien à installer sur Jenkins) et lit les images construites via le socket Docker de l'hôte. Le format est **SPDX JSON**.
+
+```groovy
+stage('SBOM Syft') {
+  steps {
+    sh '''
+      mkdir -p sbom
+      for img in api portfolio; do
+        docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+          anchore/syft:latest devsecops-$img:$SHA -o spdx-json > sbom/$img-$SHA.spdx.json
+      done
+    '''
+    archiveArtifacts artifacts: 'sbom/*.json', fingerprint: true
+  }
+}
+```
+
+Pour l'image de l'API, Syft recense **134 paquets** (par exemple `@prisma/client 6.19.3`, `alpine-baselayout`, `apk-tools`).
+
+![SBOM de l'API généré par Syft : 134 paquets](docs/captures/q96-syft-sbom.png)
+
+![Étape SBOM Syft dans le pipeline Jenkins (build #17)](docs/captures/q96-jenkins-sbom-stage.png)
+
+## Q97 : SBOM conservé comme artefact du pipeline
+
+La directive `archiveArtifacts` de l'étape précédente garde les fichiers avec le build, et `fingerprint: true` enregistre leur empreinte numérique. Le build #17 (commit `ffca5e6`) conserve `api-ffca5e6.spdx.json` (368 Kio) et `portfolio-ffca5e6.spdx.json` (798 Kio), téléchargeables depuis la page du build.
+
+![SBOM archivés par le build Jenkins #17](docs/captures/q96-jenkins-artefacts.png)
+
+## Q98 : SBOM attachés à la release GitHub
+
+Les deux fichiers SBOM sont attachés à la release **v1.0.1** : ils sont ainsi publiés avec la version, et on peut les récupérer longtemps après la disparition du build Jenkins. Cet ajout a été fait manuellement dans ce lab. Dans un vrai projet, on l'automatiserait dans le workflow de release (étape qui télécharge ou génère le SBOM puis le publie avec `gh release upload`).
+
+![Release v1.0.1 avec les deux SBOM en assets](docs/captures/q96-release-sbom.png)
+
+## Q99 : signature des images avec Cosign
+
+Cosign (projet Sigstore) signe une image **par son empreinte** (`sha256:...`) : la signature est stockée dans le registre, à côté de l'image. Ici on utilise une **paire de clés** :
+
+- `cosign.key` (clé privée, protégée par un mot de passe) reste sur la VM et dans Jenkins. Elle n'est jamais dans Git.
+- `cosign.pub` (clé publique) est dans le dépôt : elle sert à vérifier.
+
+```bash
+cosign generate-key-pair
+cosign sign --key cosign.key \
+  --use-signing-config=false --tlog-upload=false --new-bundle-format=false \
+  --allow-http-registry --allow-insecure-registry \
+  192.168.190.141:8085/devsecops/portfolio@sha256:...
+```
+
+Les options viennent du contexte du lab : registre en HTTP, aucune publication dans le journal de transparence public (Rekor) puisque tout reste hors ligne, et `--new-bundle-format=false` parce que Harbor ne reconnaît la signature (colonne **Signé**) que dans l'ancien format. La capture montre aussi l'avertissement de Cosign qui recommande de signer par empreinte plutôt que par tag : c'est ce que fait le pipeline.
+
+![Installation de Cosign](docs/captures/q97-cosign-install.png)
+
+![Signature puis vérification de l'image portfolio](docs/captures/q97-q98-cosign-sign-verify.png)
+
+![Harbor : l'image est marquée Signée (coche verte)](docs/captures/q97-harbor-signe.png)
+
+## Q100 : vérification avec `cosign verify`
+
+```bash
+cosign verify --key cosign.pub --insecure-ignore-tlog \
+  --allow-http-registry --allow-insecure-registry \
+  192.168.190.141:8085/devsecops/portfolio:ffca5e6
+```
+
+Cosign confirme que les « claims » sont valides et que la signature est vérifiée avec la clé publique indiquée, puis affiche l'empreinte de l'image (`sha256:abe68c87...`). L'option `--insecure-ignore-tlog` est nécessaire parce qu'aucune entrée n'a été publiée dans Rekor : on perd la preuve publique d'horodatage, ce qui est acceptable pour un lab isolé mais à éviter en production.
+
+La capture de la question précédente (`q97-q98-cosign-sign-verify`) montre cette vérification réussie.
+
+## Q101 : attestations de build avec GitHub Actions
+
+Le workflow `.github/workflows/provenance.yml` construit l'image de l'API, la publie sur GHCR (`ghcr.io/soulaymahableni/devsecops-api`) puis appelle `actions/attest-build-provenance`. Il demande les permissions minimales nécessaires : `contents: read`, `packages: write`, `id-token: write` (identité OIDC pour la signature) et `attestations: write`. Toutes les actions sont épinglées par SHA de commit (voir Q77).
+
+Le run `Provenance #1` (déclenché à la main, `workflow_dispatch`) réussit en 57 s et crée l'attestation `#63995420`.
+
+![Workflow Provenance réussi : attestation créée](docs/captures/q99-workflow-attest.png)
+
+![Liste des attestations du dépôt](docs/captures/q99-github-attestation.png)
+
+## Q102 : provenance des artefacts
+
+La **provenance** est la preuve de l'origine d'un artefact : quel dépôt, quel commit, quel workflow, quel déclencheur, quelle empreinte. Elle répond à « d'où vient exactement cette image, et a-t-elle été construite par mon pipeline ? ».
+
+L'attestation `https://slsa.dev/provenance/v1` indique ici : commit `48fdd4f46ed00aa2bf68d54fbac11066c416004d`, fichier de workflow `.github/workflows/provenance.yml@refs/heads/main`, déclencheur `workflow_dispatch`, et l'identité du signataire (le workflow lui-même).
+
+![Détail de l'attestation de provenance](docs/captures/q100-attestation-detail.png)
+
+On vérifie la provenance d'une image avec la CLI GitHub :
+
+```bash
+gh attestation verify oci://ghcr.io/soulaymahableni/devsecops-api:48fdd4f46ed00aa2bf68d54fbac11066c416004d \
+  --owner soulaymahableni
+```
+
+![Vérification de la provenance avec gh attestation verify](docs/captures/q100-gh-attestation-verify.png)
+
+## Q103 : SLSA et in-toto
+
+**SLSA** (Supply-chain Levels for Software Artifacts) est une échelle de maturité de la construction des logiciels. Pour la partie « Build » :
+
+| Niveau | Exigence |
+|---|---|
+| Build L1 | La provenance existe (même non signée) |
+| Build L2 | Construction sur une plateforme dédiée, provenance **signée** par cette plateforme |
+| Build L3 | Construction isolée, clés de signature inaccessibles aux étapes du build |
+
+**in-toto** est le cadre qui décrit les étapes de la chaîne et produit des déclarations signées (« statements »). L'attestation GitHub est justement une déclaration in-toto dont le contenu (« predicate ») est une provenance SLSA.
+
+**Notre position :**
+
+- Image `devsecops-api` construite par GitHub Actions : **SLSA Build L2** (plateforme hébergée, provenance signée).
+- Pipeline Jenkins : entre L1 et L2. Les images sont signées avec notre clé, mais Jenkins est auto-hébergé, ne produit pas d'attestation de provenance et utilise le socket Docker de l'hôte (build non isolé). Le niveau L3 n'est donc pas atteint.
+
+## Q104 : refuser une image non signée
+
+Deux protections se complètent :
+
+**1. Harbor refuse de servir une image non signée.** Dans le projet `devsecops`, l'option **Configuration, Déploiement de sécurité, Cosign : autoriser uniquement les images vérifiées** est activée. Un `docker pull` d'une image sans signature est refusé par `412 Precondition Failed`, alors qu'une image signée est téléchargée normalement.
+
+![Pull d'une image non signée : refusé (412)](docs/captures/q102-pull-refuse.png)
+
+![Pull d'une image signée : accepté](docs/captures/q102-pull-ok.png)
+
+**2. Le pipeline signe et vérifie à chaque build.** L'étape `Sign Cosign` s'exécute après `SBOM Syft`. Elle utilise trois identifiants Jenkins : `harbor-robot` (accès au registre), `cosign-key` (clé privée, type fichier secret) et `cosign-password` (mot de passe, type texte secret). Elle signe les deux images puis lance `cosign verify` avec `cosign.pub`. Jenkins exécute `sh` avec l'option `-e` : si la vérification échoue, l'étape et le build deviennent rouges et rien n'est livré.
+
+```groovy
+stage('Sign Cosign') {
+  steps {
+    withCredentials([
+      usernamePassword(credentialsId: 'harbor-robot', usernameVariable: 'HARBOR_USER', passwordVariable: 'HARBOR_PASS'),
+      file(credentialsId: 'cosign-key', variable: 'COSIGN_KEY_FILE'),
+      string(credentialsId: 'cosign-password', variable: 'COSIGN_PASSWORD')
+    ]) {
+      sh '''
+        export PATH=$PATH:/var/jenkins_home/bin
+        export DOCKER_CONFIG=$(mktemp -d)
+        REG=192.168.190.141:8085
+        echo "$HARBOR_PASS" | docker login $REG -u "$HARBOR_USER" --password-stdin
+        for img in api portfolio; do
+          DIGEST=$(grep -o 'digest: sha256:[a-f0-9]*' push-$img.log | tail -1 | awk '{print $2}')
+          cosign sign --key "$COSIGN_KEY_FILE" --use-signing-config=false --tlog-upload=false \
+            --new-bundle-format=false --allow-http-registry --allow-insecure-registry \
+            $REG/devsecops/$img@$DIGEST
+          cosign verify --key cosign.pub --insecure-ignore-tlog \
+            --allow-http-registry --allow-insecure-registry $REG/devsecops/$img@$DIGEST
+        done
+      '''
+    }
+  }
+}
+```
+
+Un détail technique : l'empreinte (`DIGEST`) est lue dans la sortie du `docker push` (fichiers `push-api.log` et `push-portfolio.log`), car une fois l'option Cosign activée, Harbor refuse même de répondre à une requête sur une image non signée : on ne peut donc pas lui demander l'empreinte avant de signer.
+
+Le build #22 se termine en `SUCCESS` avec la vérification de l'image `portfolio` réussie. Les clés ne sont jamais dans le dépôt : la liste des identifiants n'affiche que leurs noms.
+
+![Identifiants Jenkins pour Cosign (noms seulement)](docs/captures/q103-jenkins-credentials-cosign.png)
+
+![Étape Sign Cosign du pipeline](docs/captures/q103-jenkins-sign-cosign.png)
+
+![Console Jenkins : signature vérifiée avec la clé publique](docs/captures/q103-console-verify.png)
+
+![Harbor : api signé par Jenkins (tag 3fc594c)](docs/captures/q103-harbor-signe-jenkins.png)
+
+![Harbor : portfolio signé par Jenkins (tag 3fc594c)](docs/captures/q103-harbor-signe-jenkins-portfolio.png)
+
+## Q105 : simulation d'une attaque sur la chaîne d'approvisionnement
+
+**Scénario :** un attaquant qui dispose d'un accès en écriture au registre remplace l'image légitime par une version piégée en **réutilisant le même tag** (`demo`). Une signature est liée à l'**empreinte** du contenu, pas au nom du tag : l'image piégée ne peut donc pas hériter de la signature.
+
+**1. L'image légitime et signée** est publiée sous le tag `demo` (empreinte `sha256:3e82d5ee...`), puis téléchargée sans problème.
+
+![Image légitime : push et pull réussis](docs/captures/q105-1-image-legitime.png)
+
+**2. L'attaque.** Une image piégée (base `alpine:3.20` contenant un fichier `/backdoor.txt`) est envoyée sous le même tag `demo` :
+
+```bash
+printf 'FROM alpine:3.20\nRUN echo "code malveillant" > /backdoor.txt\nCMD ["sh"]\n' > Dockerfile
+docker build -t 192.168.190.141:8085/devsecops/api:demo .
+docker push 192.168.190.141:8085/devsecops/api:demo
+```
+
+Le push réussit (l'attaquant a des droits d'écriture). Dans Harbor, `demo` pointe maintenant vers un nouvel artefact `sha256:3243d4d8` (3,47 Mio) avec la colonne **Signé** rouge, alors que l'artefact légitime `3e82d5ee` a perdu ce tag mais reste signé.
+
+![Le tag demo écrasé par l'image piégée (non signée)](docs/captures/q105-2-tag-ecrase.png)
+
+**3. La défense.** La victime essaie de déployer `api:demo` :
+
+```text
+$ docker pull 192.168.190.141:8085/devsecops/api:demo
+Error response from daemon: unknown: failed to resolve reference
+"192.168.190.141:8085/devsecops/api:demo": unexpected status from HEAD request to
+http://192.168.190.141:8085/v2/devsecops/api/manifests/demo: 412 Precondition Failed
+```
+
+Le message est identique à celui de la capture `q102-pull-refuse` (Q104) : même mécanisme, Harbor répond `412` à toute image non signée.
+
+Cosign arrive à la même conclusion :
+
+```text
+$ cosign verify --key cosign.pub --insecure-ignore-tlog ... 192.168.190.141:8085/devsecops/api:demo
+Error: no signatures found
+```
+
+![cosign verify : aucune signature trouvée](docs/captures/q105-4-cosign-verify-echec.png)
+
+L'artefact piégé a ensuite été supprimé de Harbor.
+
+![Harbor nettoyé : l'artefact piégé a disparu](docs/captures/q105-5-harbor-nettoye.png)
+
+**Conclusion et limites.**
+
+- Harbor et la vérification Cosign du pipeline bloquent bien la livraison d'une image non signée, même quand le tag est réutilisé.
+- À notre connaissance, l'option Harbor contrôle **la présence** d'une signature, pas l'identité du signataire : un attaquant qui pourrait pousser une image **et** une signature faite avec sa propre clé passerait ce premier filtre. C'est pour cela que la vérification du pipeline avec **notre** clé publique (`cosign verify --key cosign.pub`) reste indispensable avant tout déploiement.
+- Le cas d'une **dépendance compromise** est couvert par d'autres étapes du pipeline : `npm audit` et Dependency-Check (vulnérabilités connues), Trivy (image), Gitleaks (secrets) et le SBOM, qui permet de retrouver rapidement les images concernées.
+- Améliorations possibles : rotation de la clé Cosign, signature « keyless » avec une identité OIDC, publication dans Rekor, TLS sur Harbor.
+
 ---
 
 # Avancement général
@@ -1289,4 +1530,4 @@ Une règle de rétention est définie sur le projet `devsecops` : **garder les i
 | Activité 6 : Git Workflow | 79-84 | ✅ fait |
 | Section 19 : optimisation des images | 85-89 | ✅ fait |
 | Section 20 : Harbor | 90-95 | ✅ fait |
-| Section 21 : Software Supply Chain | 96-105 | ⏳ à faire |
+| Section 21 : Software Supply Chain | 96-105 | ✅ fait |
