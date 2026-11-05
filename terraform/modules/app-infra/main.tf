@@ -65,4 +65,10 @@ resource "aws_dynamodb_table" "contacts" {
     name = "id"
     type = "S"
   }
+
+  # Chiffrement avec notre clé KMS (règle Semgrep aws-dynamodb-table-unencrypted)
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.data.arn
+  }
 }
