@@ -1,5 +1,5 @@
 # 1) Dépendances de production uniquement
-FROM node:22-alpine AS deps
+FROM node:25-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
@@ -11,7 +11,7 @@ COPY prisma ./prisma
 RUN npx prisma generate
 
 # 3) Image finale minimale
-FROM node:22-alpine AS runtime
+FROM node:25-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 RUN apk add --no-cache openssl \
