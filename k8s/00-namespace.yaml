@@ -1,0 +1,7 @@
+# Q138 : namespace dédié au DevSecOps Portfolio
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: portfolio
+  labels:
+    app.kubernetes.io/part-of: devsecops-portfolio

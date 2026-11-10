@@ -1,0 +1,13 @@
+# Q142 : Service de l'API (interne au cluster)
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: portfolio
+spec:
+  type: ClusterIP
+  selector:
+    app: api
+  ports:
+    - port: 4000
+      targetPort: 4000

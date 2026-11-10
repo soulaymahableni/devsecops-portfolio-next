@@ -1,0 +1,50 @@
+# Base PostgreSQL TEMPORAIRE (sans volume) pour que l'API démarre dès le Q140.
+# Elle sera remplacée au Q150 par une version avec PersistentVolumeClaim.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: portfolio
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      securityContext:
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        appArmorProfile:
+          type: Unconfined   # contournement : AppArmor (Ubuntu 26.04 + K3s) bloque les signaux du conteneur
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: portfolio
+            - name: POSTGRES_PASSWORD
+              value: change_me_dev_only   # valeur de démonstration, remplacée par un Secret au Q148
+            - name: POSTGRES_DB
+              value: portfolio
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: portfolio
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

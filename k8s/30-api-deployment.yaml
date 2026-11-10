@@ -1,0 +1,31 @@
+# Q140 : Deployment de l'API Express
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: portfolio
+  labels:
+    app: api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+        - name: api
+          image: devsecops-api:1.0
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 4000
+          env:
+            - name: PORT
+              value: "4000"
+            - name: CORS_ORIGIN
+              value: http://portfolio.local
+            - name: DATABASE_URL
+              value: postgresql://portfolio:change_me_dev_only@postgres:5432/portfolio?schema=public

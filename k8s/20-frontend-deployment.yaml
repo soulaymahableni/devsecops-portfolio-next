@@ -1,0 +1,28 @@
+# Q139 : Deployment du frontend Next.js
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: portfolio
+  labels:
+    app: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: devsecops-portfolio:1.0
+          imagePullPolicy: Never      # image importée dans K3s (pas de registre)
+          ports:
+            - containerPort: 3000
+          env:
+            # Q143 : le frontend joint l'API par le nom du Service Kubernetes
+            - name: API_URL
+              value: http://api:4000
