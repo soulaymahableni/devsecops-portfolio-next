@@ -1,0 +1,24 @@
+# -*- mode: ruby -*-
+# Q145 : vagrant up -> Ubuntu -> SSH -> Docker -> K3s (provisionné par Ansible)
+Vagrant.configure("2") do |config|
+  config.vm.box = "bento/ubuntu-24.04"
+  config.vm.hostname = "k3s-vm"
+
+  config.vm.network "private_network", ip: "192.168.56.50"
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = "k3s-vm"
+    vb.memory = 2048
+    vb.cpus   = 2
+  end
+
+  # Le dossier Ansible du dépôt est monté dans la VM
+  config.vm.synced_folder "../../ansible/k3s", "/ansible"
+
+  config.vm.provision "ansible_local" do |a|
+    a.provisioning_path = "/ansible"
+    a.playbook          = "site.yml"
+    a.install_mode      = "default"
+    a.extra_vars        = { docker_user: "vagrant" }
+  end
+end

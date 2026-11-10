@@ -1,0 +1,14 @@
+---
+# Q144/Q145 : Ubuntu > SSH > Docker > K3s
+# Pour supprimer K3s : ansible-playbook ... -e k3s_state=absent
+- name: Préparer la VM et installer K3s
+  hosts: all
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: ssh
+      when: k3s_state | default('present') == 'present'
+    - role: docker
+      when: k3s_state | default('present') == 'present'
+    - role: k3s

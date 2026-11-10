@@ -1,0 +1,3 @@
+---
+# Utilisateur ajouté au groupe docker (vide = personne)
+docker_user: ""
