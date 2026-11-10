@@ -1,4 +1,4 @@
-# Q139 : Deployment du frontend Next.js
+# Q139 : Deployment du frontend Next.js (Q149 : configuration lue dans le ConfigMap)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,4 +25,7 @@ spec:
           env:
             # Q143 : le frontend joint l'API par le nom du Service Kubernetes
             - name: API_URL
-              value: http://api:4000
+              valueFrom:
+                configMapKeyRef:
+                  name: portfolio-config
+                  key: API_URL

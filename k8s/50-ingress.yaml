@@ -1,0 +1,36 @@
+# Q151/Q152 : accès au portfolio par un nom local (Traefik, fourni par K3s)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: portfolio
+  namespace: portfolio
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: portfolio.local
+      http:
+        paths:
+          # le formulaire de contact passe par la route Next.js, qui appelle l'API
+          - path: /api/contact
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 3000
+          # Q152 : portfolio.local/api -> API Express
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 4000
+          # Q151 : tout le reste -> frontend
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 3000

@@ -1,4 +1,4 @@
-# Q140 : Deployment de l'API Express
+# Q140 : Deployment de l'API Express (Q149 : ConfigMap + Secret)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -24,8 +24,35 @@ spec:
             - containerPort: 4000
           env:
             - name: PORT
-              value: "4000"
+              valueFrom:
+                configMapKeyRef:
+                  name: portfolio-config
+                  key: PORT
             - name: CORS_ORIGIN
-              value: http://portfolio.local
+              valueFrom:
+                configMapKeyRef:
+                  name: portfolio-config
+                  key: CORS_ORIGIN
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: portfolio-config
+                  key: POSTGRES_HOST
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: portfolio-config
+                  key: POSTGRES_USER
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: portfolio-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: portfolio-secret
+                  key: POSTGRES_PASSWORD
+            # $(VAR) : Kubernetes remplace par les variables définies plus haut
             - name: DATABASE_URL
-              value: postgresql://portfolio:change_me_dev_only@postgres:5432/portfolio?schema=public
+              value: postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(POSTGRES_HOST):5432/$(POSTGRES_DB)?schema=public
