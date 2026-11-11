@@ -1,0 +1,34 @@
+# Q161 : ServiceAccount dédié à l'application
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: portfolio-app
+  namespace: portfolio
+automountServiceAccountToken: false   # l'application n'appelle jamais l'API Kubernetes
+---
+# Q162 : Role minimal : lire uniquement le ConfigMap de l'application
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: portfolio-config-reader
+  namespace: portfolio
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["portfolio-config"]
+    verbs: ["get"]
+---
+# Q163 : association du Role au ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: portfolio-config-reader
+  namespace: portfolio
+subjects:
+  - kind: ServiceAccount
+    name: portfolio-app
+    namespace: portfolio
+roleRef:
+  kind: Role
+  name: portfolio-config-reader
+  apiGroup: rbac.authorization.k8s.io
