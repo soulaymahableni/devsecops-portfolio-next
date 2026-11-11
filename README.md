@@ -1521,6 +1521,290 @@ L'artefact piégé a ensuite été supprimé de Harbor.
 
 ---
 
+# Section 22 : AWS en local avec Floci (Q106 à Q117)
+
+Pour travailler avec des services AWS (S3, SQS, DynamoDB, Lambda, Secrets Manager) sans compte ni coût, on utilise **Floci**, un émulateur AWS local sous licence MIT. Il écoute sur le port `4566` et répond à la même API qu'AWS : le code et l'AWS CLI ne changent que par l'URL d'endpoint.
+
+```mermaid
+flowchart LR
+  U[Navigateur] --> P[Portfolio Next.js]
+  P --> A[API Express]
+  A --> D[(PostgreSQL)]
+  A -->|archive le message| S3[S3 : contact-archives]
+  A -->|notification| SQS[SQS : contact-notifications]
+  subgraph Floci [Floci : localhost:4566]
+    S3
+    SQS
+  end
+  T[Terraform / Ansible] -->|crée les ressources| Floci
+```
+
+## Q106 : installer et démarrer Floci
+Floci tourne dans un conteneur Docker, avec le socket Docker monté pour pouvoir lancer Lambda dans de vrais conteneurs. Il est aussi déclaré comme service `floci` dans `docker-compose.yml`, avec un healthcheck sur `/_floci/health`.
+
+```bash
+docker compose up -d floci
+docker ps --filter name=floci
+curl -s http://localhost:4566/_floci/health
+```
+![Floci démarré](docs/captures/q106-floci-docker-ps.png)
+
+## Q107 : configurer l'AWS CLI vers Floci
+L'AWS CLI v2 (installateur officiel) utilise un profil `floci` avec de fausses clés (`test`/`test`) et l'option `--endpoint-url`. Un alias évite de la répéter :
+
+```bash
+aws configure --profile floci          # clés : test / test, région us-east-1
+alias awsf='aws --profile floci --endpoint-url http://localhost:4566'
+awsf sts get-caller-identity
+```
+![AWS CLI vers Floci](docs/captures/q107-aws-cli-floci.png)
+
+## Q108 : créer un bucket S3
+```bash
+awsf s3 mb s3://demo-bucket
+awsf s3 ls
+```
+![Bucket S3](docs/captures/q108-s3-bucket.png)
+
+## Q109 : envoyer et récupérer un fichier
+```bash
+echo "bonjour floci" > hello.txt
+awsf s3 cp hello.txt s3://demo-bucket/hello.txt
+awsf s3 cp s3://demo-bucket/hello.txt retour.txt && cat retour.txt
+```
+![Upload et download S3](docs/captures/q109-s3-upload-download.png)
+
+## Q110 : file SQS
+```bash
+awsf sqs create-queue --queue-name demo-queue
+awsf sqs send-message --queue-url http://localhost:4566/000000000000/demo-queue --message-body "salut"
+awsf sqs receive-message --queue-url http://localhost:4566/000000000000/demo-queue
+```
+![SQS : envoi et réception](docs/captures/q110-sqs.png)
+
+## Q111 : table DynamoDB
+```bash
+awsf dynamodb create-table --table-name demo-table \
+  --attribute-definitions AttributeName=id,AttributeType=S \
+  --key-schema AttributeName=id,KeyType=HASH --billing-mode PAY_PER_REQUEST
+awsf dynamodb put-item --table-name demo-table --item '{"id":{"S":"1"}}'
+awsf dynamodb scan --table-name demo-table
+```
+![DynamoDB](docs/captures/q111-dynamodb.png)
+
+## Q112 : fonction Lambda
+La fonction est zippée puis déployée ; Floci l'exécute dans un vrai conteneur (la première invocation est plus lente, le temps de télécharger l'image d'exécution).
+
+![Lambda](docs/captures/q112-lambda.png)
+
+## Q113 : Secrets Manager
+```bash
+awsf secretsmanager create-secret --name demo/secret --secret-string "valeur-de-test"
+awsf secretsmanager get-secret-value --secret-id demo/secret
+```
+![Secrets Manager](docs/captures/q113-secrets-manager.png)
+
+## Q114 : l'API utilise Floci
+À chaque message de contact, l'API (`api/src/aws.js`) :
+1. enregistre le message dans PostgreSQL ;
+2. l'archive dans S3 (`messages/<id>.json`) ;
+3. publie une notification dans SQS (`contact.received`).
+
+L'intégration n'est active que si `AWS_ENDPOINT_URL` est défini ; sinon l'API fonctionne comme avant. Elle est « au mieux » : si Floci est indisponible, le message reste enregistré et la réponse indique `"notification":"échec"` (ou `"désactivée"`). Les noms du bucket et de la file viennent de `CONTACT_BUCKET_NAME` et `CONTACT_QUEUE_NAME`.
+
+## Q115 : tests
+- Tests unitaires (`api/tests/aws.test.js`) : le SDK est simulé, aucun réseau.
+- Test d'intégration (`npm run test:integration`) : un vrai message est envoyé à l'API, puis on relit l'objet dans S3 et le message dans SQS sur Floci.
+
+## Q116 : Floci dans GitHub Actions
+Le job `tests-integration-floci` lance Floci comme conteneur de service, **épinglé par digest** pour que la CI soit reproductible, puis exécute le test d'intégration.
+
+![GitHub Actions avec Floci](docs/captures/q116-actions-floci.png)
+
+## Q117 : Floci, LocalStack, moto ou vrai AWS ?
+
+| Critère | Floci | LocalStack Community | moto | AWS réel |
+|---|---|---|---|---|
+| Licence | MIT | Fin de l'édition Community libre le 23 mars 2026 : compte et jeton exigés, offre gratuite non commerciale | Apache 2.0 | Propriétaire |
+| Usage | Serveur local, port 4566 | Serveur local | Surtout bibliothèque de tests Python | Cloud |
+| Services utilisés ici | S3, SQS, DynamoDB, Secrets Manager, KMS, Lambda | Idem (selon l'offre) | Beaucoup, simulés en mémoire | Tous |
+| Coût | Gratuit | Gratuit limité | Gratuit | Payant |
+| Fidélité | Bonne pour le développement | Bonne | Moyenne | Référence |
+
+Choix : **Floci**, car il est libre, sans compte, léger, et compatible avec Terraform et l'AWS CLI. Limite : c'est un émulateur, donc les comportements fins (IAM, délais, quotas) peuvent différer d'AWS : on ne remplace pas un test final sur un vrai compte.
+
+---
+
+# Section 23 : Terraform, les bases (Q118 à Q123)
+
+Terraform décrit l'infrastructure dans des fichiers `.tf` : on écrit l'état voulu, Terraform compare avec l'existant (`plan`) puis applique la différence (`apply`).
+
+## Q118 : version de Terraform
+Terraform 1.17.1, fournisseur `hashicorp/aws` 6.72.0.
+
+![terraform version](docs/captures/q118-terraform-version.png)
+
+## Q119 : premiers fichiers
+`terraform/intro/` contient `providers.tf` (le fournisseur AWS pointé sur Floci par un bloc `endpoints`, avec les options `skip_*` et `s3_use_path_style`), `variables.tf`, `main.tf` (bucket, file, table) et `outputs.tf`.
+
+![Fichiers Terraform](docs/captures/q119-terraform-fichiers.png)
+
+## Q120 : init, validate, plan
+```bash
+terraform init
+terraform validate
+terraform plan
+```
+Un cache de plugins (`plugin_cache_dir` dans `~/.terraformrc`) évite de retélécharger le fournisseur à chaque dossier (important : le disque de la VM est limité).
+
+![init et validate](docs/captures/q120-terraform-init-validate.png)
+![plan](docs/captures/q120-terraform-plan.png)
+
+## Q121 : apply
+![apply](docs/captures/q121-terraform-apply.png)
+
+## Q122 : vérification avec l'AWS CLI
+Les ressources créées par Terraform sont relues avec `awsf` (bucket, file, table) : Terraform et la CLI parlent au même Floci.
+
+![Vérification](docs/captures/q122-verification-aws-cli.png)
+
+## Q123 : destroy
+`terraform destroy` supprime toutes les ressources déclarées.
+
+![destroy](docs/captures/q123-terraform-destroy.png)
+
+---
+
+# Section 24 : Terraform avancé (Q124 à Q133)
+
+## Q124 : module réutilisable
+`terraform/modules/app-infra` crée, pour un projet et un environnement donnés : une clé KMS (avec rotation), un bucket S3 (accès public bloqué, chiffrement KMS, versioning optionnel), une file SQS chiffrée et une table DynamoDB chiffrée avec la clé KMS.
+
+![Arborescence des modules](docs/captures/q124-modules-arborescence.png)
+
+## Q125 : environnements dev, staging, prod
+Chaque dossier `terraform/envs/<env>` appelle le même module avec des valeurs différentes.
+
+| Environnement | Rétention SQS | Versioning S3 |
+|---|---|---|
+| dev | 1 jour | non |
+| staging | 4 jours | non |
+| prod | 14 jours | oui |
+
+![Environnements](docs/captures/q125-environnements.png)
+
+## Q126 : le fichier d'état (state)
+Le *state* est la mémoire de Terraform : il relie chaque ressource écrite dans le code à la ressource réelle (identifiants, attributs). Sans lui, Terraform ne saurait pas ce qui existe déjà et recréerait tout. Il peut contenir des valeurs sensibles : il ne se commit jamais (`*.tfstate` est dans `.gitignore`) et se stocke dans un backend distant protégé.
+
+## Q127 : backend S3 distant
+Le state de chaque environnement est stocké dans le bucket `tfstate` (clé `<env>/terraform.tfstate`). La configuration est partielle : `terraform/backend.hcl` contient les paramètres communs, et la clé est dans `backend.tf` de chaque environnement.
+
+```bash
+terraform init -backend-config=../../backend.hcl
+```
+![Backend S3](docs/captures/q127-backend-s3.png)
+
+## Q128 : verrouillage du state
+Une table DynamoDB `tf-locks` empêche deux exécutions simultanées. Preuve : pendant qu'un `apply` attend sa confirmation, un second `terraform plan` échoue avec `Error acquiring the state lock`.
+
+Remarque : le paramètre `dynamodb_table` est déprécié au profit de `use_lockfile` (verrou dans S3 lui-même). Il reste utilisé ici parce que Floci émule DynamoDB et que le verrou y est facile à observer.
+
+![Verrou du state](docs/captures/q128-verrou-state.png)
+
+## Q129 : analyse de sécurité du code Terraform
+Trois outils ont été essayés : **Trivy** (retenu en CI, bloquant sur HIGH et CRITICAL), **Semgrep** (déjà dans le job `sast`) et **Checkov** (9 alertes, trop bruyant, non retenu). Corrections apportées au module : chiffrement KMS de la table DynamoDB, SQS chiffrée, accès public bloqué sur S3. Une seule exception volontaire, documentée par `nosemgrep` avec justification, dans le dossier de démonstration `terraform/intro`.
+
+Le job `iac-scan` du workflow `ci.yml` lance Trivy sur `terraform/` (en ignorant `terraform/intro` et les dossiers `.terraform`).
+
+![Trivy OK](docs/captures/q129-trivy-ok.png)
+![iac-scan vert dans Actions](docs/captures/q129-actions-iac-scan-vert.png)
+![Vérification de sécurité](docs/captures/q129-verification-securite.png)
+
+## Q130 : une erreur de configuration est bloquée
+On introduit volontairement une mauvaise configuration (sur une branche de démonstration jamais fusionnée) : Trivy la détecte en local, le job `iac-scan` échoue et la pull request ne peut pas être fusionnée.
+
+![Trivy local en échec](docs/captures/q130-trivy-local-echec.png)
+![Pipeline en échec](docs/captures/q130-pipeline-iac-echoue.png)
+![Journal du job iac-scan](docs/captures/q130-iac-scan-journal.png)
+
+## Q131 : OpenTofu
+OpenTofu 1.13.9 est un fork libre de Terraform (géré par la Linux Foundation). Le même code HCL fonctionne : `terraform/envs/tofu` utilise le module sans modification.
+
+| | Terraform | OpenTofu |
+|---|---|---|
+| Licence | BSL (source disponible) | MPL 2.0 (open source) |
+| Gouvernance | HashiCorp | Linux Foundation |
+| Syntaxe | HCL | HCL (compatible) |
+| Commande | `terraform` | `tofu` |
+
+![tofu version](docs/captures/q131-tofu-version.png)
+![tofu apply](docs/captures/q131-opentofu-apply.png)
+
+## Q132 : Terragrunt
+Terragrunt (v1.2.1, qui utilise `tofu`) évite de répéter la configuration : `terraform/terragrunt/root.hcl` définit une seule fois le backend et le fournisseur, et chaque environnement (`dev`, `staging`, `prod`) ne contient qu'un petit `terragrunt.hcl` avec ses valeurs.
+
+![Arborescence Terragrunt](docs/captures/q132-terragrunt-arborescence.png)
+![terragrunt apply](docs/captures/q132-terragrunt-apply.png)
+![Vérification](docs/captures/q132-terragrunt-verification.png)
+
+## Q133 : Pulumi, Terraform et OpenTofu
+Pulumi décrit la même infrastructure en Python (`pulumi/__main__.py` : un fournisseur Floci et un bucket S3), avec un état local.
+
+| | Terraform | OpenTofu | Pulumi |
+|---|---|---|---|
+| Langage | HCL | HCL | Python, TypeScript, Go… |
+| Licence | BSL | MPL 2.0 | Apache 2.0 |
+| État | fichier ou backend distant | idem | local ou service Pulumi |
+| Écosystème | le plus grand | compatible Terraform | grand, plus récent |
+| Points forts | standard, nombreux modules | libre, compatible | vrais langages, boucles et tests |
+
+![Pulumi version](docs/captures/q133-pulumi-version.png)
+![pulumi up](docs/captures/q133-pulumi-up.png)
+![Vérification](docs/captures/q133-pulumi-verification.png)
+
+---
+
+# Section 25 : Terraform et Ansible (Q134 à Q135)
+
+## Q134 : Terraform, puis Ansible, puis Docker
+Terraform crée l'infrastructure, **Ansible la configure et déploie la pile**, Docker Compose exécute les conteneurs.
+
+```mermaid
+flowchart LR
+  R[automation/rebuild.sh] --> F[1. Floci démarre]
+  F --> T[2. Terraform<br/>envs/platform]
+  T -->|tf.json : noms du bucket et de la file| AN[3. Ansible<br/>deploy.yml]
+  AN -->|docker compose up --build| DK[Conteneurs :<br/>db, api, portfolio]
+  DK --> TEST[4. Test de bout en bout]
+  T -.-> FL[(Floci : S3, SQS, DynamoDB, KMS)]
+  DK -.->|API écrit dans S3 et SQS| FL
+```
+
+- `terraform/envs/platform` crée bucket, file, table et clé KMS, et exporte leurs noms (`terraform output -json`).
+- `automation/ansible/deploy.yml` lit ces sorties et lance `docker compose up -d --build` avec `CONTACT_BUCKET_NAME` et `CONTACT_QUEUE_NAME`, puis attend que l'API réponde.
+- Le test de fin envoie un message de contact : la réponse `"notification":"envoyée"` prouve que l'API écrit dans les ressources créées par Terraform.
+
+Choix : **Docker Compose** plutôt que K3s, car la VM n'a qu'environ 5 Go de RAM.
+
+![Conteneurs en marche](docs/captures/q134-docker-ps.png)
+![Reconstruction automatique](docs/captures/q134-rebuild-sortie.png)
+
+## Q135 : tout détruire et tout reconstruire par script
+```bash
+./automation/destroy.sh      # terraform destroy, docker compose down -v
+./automation/rebuild.sh      # Floci, Terraform, Ansible, test
+```
+Aucune étape manuelle : le bucket du state et la table de verrou sont recréés par le script, et le bucket applicatif peut être supprimé même s'il contient des messages (`force_destroy`).
+
+| Mesure | Résultat |
+|---|---|
+| Reconstruction complète (images déjà en cache) | **63 s** |
+| Première reconstruction (construction des images) | 122 s |
+
+![Reconstruction chronométrée](docs/captures/q134-rebuild-sortie.png)
+
+---
+
 # Avancement général
 
 | Partie | Questions | État |
@@ -1531,3 +1815,7 @@ L'artefact piégé a ensuite été supprimé de Harbor.
 | Section 19 : optimisation des images | 85-89 | ✅ fait |
 | Section 20 : Harbor | 90-95 | ✅ fait |
 | Section 21 : Software Supply Chain | 96-105 | ✅ fait |
+| Section 22 : Floci (AWS local) | 106-117 | ✅ fait |
+| Section 23 : Terraform, les bases | 118-123 | ✅ fait |
+| Section 24 : Terraform avancé | 124-133 | ✅ fait |
+| Section 25 : Terraform et Ansible | 134-135 | ✅ fait |
