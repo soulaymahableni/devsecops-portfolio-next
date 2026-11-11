@@ -36,12 +36,19 @@ spec:
         runAsNonRoot: true
         runAsGroup: 70
         fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
         appArmorProfile:
           type: Unconfined   # contournement : AppArmor (Ubuntu 26.04 + K3s) bloque les signaux du conteneur
+      automountServiceAccountToken: false
       containers:
         - name: postgres
           image: postgres:16-alpine
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 5432
           env:
