@@ -5,3 +5,5 @@ metadata:
   name: portfolio
   labels:
     app.kubernetes.io/part-of: devsecops-portfolio
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
