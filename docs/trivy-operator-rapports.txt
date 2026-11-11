@@ -1,0 +1,24 @@
+# Rapports Trivy Operator (Q186)
+
+NAMESPACE   NAME                                     REPOSITORY         TAG         SCANNER   AGE   CRITICAL   HIGH   MEDIUM   LOW   UNKNOWN
+portfolio   replicaset-postgres-977d64db9-postgres   library/postgres   16-alpine   Trivy     10m   1          8      4        0     75
+
+NAMESPACE    NAME                                  SCANNER   AGE
+portfolio    ingress-portfolio                     Trivy     35m
+portfolio    ingress-portfolio-http                Trivy     35m
+portfolio    networkpolicy-allow-dns               Trivy     35m
+portfolio    networkpolicy-api                     Trivy     35m
+portfolio    networkpolicy-default-deny-all        Trivy     35m
+portfolio    networkpolicy-frontend                Trivy     35m
+portfolio    networkpolicy-postgres                Trivy     35m
+portfolio    persistentvolumeclaim-postgres-data   Trivy     35m
+portfolio    replicaset-api-cfd55495               Trivy     35m
+portfolio    replicaset-frontend-8886b9fd          Trivy     35m
+portfolio    replicaset-postgres-977d64db9         Trivy     35m
+portfolio    service-api                           Trivy     35m
+portfolio    service-frontend                      Trivy     35m
+portfolio    service-postgres                      Trivy     35m
+trivy-demo   replicaset-nginx-demo-79984b5976      Trivy     18m
+
+NAMESPACE   NAME                           SCANNER   AGE
+portfolio   role-portfolio-config-reader   Trivy     35m
