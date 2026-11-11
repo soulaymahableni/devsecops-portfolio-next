@@ -1,0 +1,55 @@
+# Q154 : autorité de certification locale (CA) et certificat TLS pour portfolio.local
+# 1) Issuer auto-signé, utilisé uniquement pour créer la CA
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: selfsigned-issuer
+  namespace: portfolio
+spec:
+  selfSigned: {}
+---
+# 2) Certificat de la CA locale
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: portfolio-ca
+  namespace: portfolio
+spec:
+  isCA: true
+  commonName: portfolio-ca
+  secretName: portfolio-ca-secret
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: selfsigned-issuer
+    kind: Issuer
+---
+# 3) Issuer qui signe avec la CA locale
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: portfolio-ca-issuer
+  namespace: portfolio
+spec:
+  ca:
+    secretName: portfolio-ca-secret
+---
+# 4) Certificat TLS du portfolio, signé par la CA locale
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: portfolio-tls
+  namespace: portfolio
+spec:
+  secretName: portfolio-tls
+  dnsNames:
+    - portfolio.local
+  duration: 2160h      # 90 jours
+  renewBefore: 360h    # renouvelé 15 jours avant l'expiration
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: portfolio-ca-issuer
+    kind: Issuer

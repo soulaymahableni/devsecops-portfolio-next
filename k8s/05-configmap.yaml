@@ -9,7 +9,7 @@ data:
   API_URL: http://api:4000
   # API
   PORT: "4000"
-  CORS_ORIGIN: http://portfolio.local
+  CORS_ORIGIN: https://portfolio.local
   # base de données (hors mot de passe)
   POSTGRES_HOST: postgres
   POSTGRES_USER: portfolio

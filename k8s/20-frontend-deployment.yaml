@@ -1,4 +1,4 @@
-# Q139 : Deployment du frontend Next.js (Q149 : configuration lue dans le ConfigMap)
+# Q139 : Deployment du frontend Next.js (Q149 : ConfigMap ; Q159 : requests et limits)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,13 +19,19 @@ spec:
       containers:
         - name: frontend
           image: devsecops-portfolio:1.0
-          imagePullPolicy: Never      # image importée dans K3s (pas de registre)
+          imagePullPolicy: Never
           ports:
             - containerPort: 3000
           env:
-            # Q143 : le frontend joint l'API par le nom du Service Kubernetes
             - name: API_URL
               valueFrom:
                 configMapKeyRef:
                   name: portfolio-config
                   key: API_URL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
