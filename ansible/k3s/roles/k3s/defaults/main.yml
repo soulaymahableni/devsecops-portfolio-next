@@ -1,0 +1,7 @@
+---
+# present = installer K3s ; absent = le désinstaller (Q146)
+k3s_state: present
+# Version figée pour une installation reproductible
+k3s_version: "v1.37.2+k3s1"
+# Options du serveur : kubeconfig lisible par l'utilisateur du lab
+k3s_exec: "server --write-kubeconfig-mode 644"

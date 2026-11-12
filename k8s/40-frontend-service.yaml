@@ -1,0 +1,14 @@
+# Q141 : Service du frontend (NodePort : accessible depuis la machine physique)
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: portfolio
+spec:
+  type: NodePort
+  selector:
+    app: frontend
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30080

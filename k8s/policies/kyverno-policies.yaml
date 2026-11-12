@@ -1,0 +1,118 @@
+# Politiques Kyverno v1.20 (nouveau type ValidatingPolicy, règles en CEL).
+# Elles s'appliquent aux Pods et aux Deployments du namespace "portfolio".
+# Q172 : interdire le tag :latest (et les images sans tag)
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: disallow-latest-tag
+spec:
+  validationActions: [Deny]
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: portfolio
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+      - apiGroups: [apps]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [deployments]
+  variables:
+    - name: podSpec
+      expression: "has(object.spec.template) ? object.spec.template.spec : object.spec"
+  validations:
+    - expression: "variables.podSpec.containers.all(c, c.image.contains(':'))"
+      message: "L'image doit avoir un tag de version explicite (une image sans tag vaut :latest)."
+    - expression: "variables.podSpec.containers.all(c, !c.image.endsWith(':latest'))"
+      message: "Le tag ':latest' est interdit : utilisez un tag de version précis."
+---
+# Q173 : interdire les conteneurs privilégiés
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: disallow-privileged
+spec:
+  validationActions: [Deny]
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: portfolio
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+      - apiGroups: [apps]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [deployments]
+  variables:
+    - name: podSpec
+      expression: "has(object.spec.template) ? object.spec.template.spec : object.spec"
+  validations:
+    - expression: "variables.podSpec.containers.all(c, !has(c.securityContext) || !has(c.securityContext.privileged) || c.securityContext.privileged == false)"
+      message: "Les conteneurs privilégiés sont interdits (securityContext.privileged doit rester false)."
+---
+# Q174 : imposer runAsNonRoot (au niveau du pod, ou de chaque conteneur)
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: require-run-as-nonroot
+spec:
+  validationActions: [Deny]
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: portfolio
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+      - apiGroups: [apps]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [deployments]
+  variables:
+    - name: podSpec
+      expression: "has(object.spec.template) ? object.spec.template.spec : object.spec"
+  validations:
+    - expression: >-
+        (has(variables.podSpec.securityContext) && has(variables.podSpec.securityContext.runAsNonRoot)
+        && variables.podSpec.securityContext.runAsNonRoot == true)
+        || variables.podSpec.containers.all(c, has(c.securityContext) && has(c.securityContext.runAsNonRoot)
+        && c.securityContext.runAsNonRoot == true)
+      message: "securityContext.runAsNonRoot doit être true (au niveau du pod ou de chaque conteneur)."
+---
+# Q175 : imposer requests (cpu, memory) et limits (memory)
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: require-requests-limits
+spec:
+  validationActions: [Deny]
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: portfolio
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+      - apiGroups: [apps]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [deployments]
+  variables:
+    - name: podSpec
+      expression: "has(object.spec.template) ? object.spec.template.spec : object.spec"
+  validations:
+    - expression: >-
+        variables.podSpec.containers.all(c, has(c.resources) && has(c.resources.requests)
+        && 'cpu' in c.resources.requests && 'memory' in c.resources.requests
+        && has(c.resources.limits) && 'memory' in c.resources.limits)
+      message: "Chaque conteneur doit définir resources.requests (cpu, memory) et resources.limits.memory."

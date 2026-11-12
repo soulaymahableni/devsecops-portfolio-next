@@ -1805,6 +1805,577 @@ Aucune étape manuelle : le bucket du state et la table de verrou sont recréés
 
 ---
 
+# Activité 7 : Kubernetes avec K3s (sections 26 à 35, Q136 à Q189)
+
+Cette activité déploie le portfolio (frontend Next.js, API Express, PostgreSQL) sur un cluster **K3s** monté sur la VM Ubuntu 26.04 (`automatisation`, `192.168.190.141`), puis le sécurise couche par couche : secrets, HTTPS, droits, réseau, politiques, scan et détection à l'exécution.
+
+```mermaid
+flowchart LR
+  B[Navigateur<br/>https://portfolio.local] -->|443| T[Traefik Ingress<br/>cert-manager TLS]
+  T -->|/| F[frontend<br/>Next.js uid 100]
+  T -->|/api| A[api<br/>Express uid 1000]
+  F -->|http://api:4000| A
+  A -->|postgres:5432| P[(postgres<br/>PVC 1Gi)]
+  subgraph ns[namespace portfolio]
+    F
+    A
+    P
+  end
+  K[Kyverno] -. admission .-> ns
+  N[NetworkPolicies] -. réseau .-> ns
+  R[RBAC + PSS] -. droits .-> ns
+```
+
+Les manifests sont dans `k8s/`, l'automatisation dans `ansible/k3s/` et `automation/`, les politiques dans `k8s/policies/`.
+
+## Tableau d'avancement de l'activité 7
+
+| Section | Questions | Sujet | État |
+|---|---|---|---|
+| 26 | Q136 à Q143 | K3s, premiers objets, NodePort | Fait |
+| 27 | Q144 à Q146 | Ansible, Vagrant, reconstruction du cluster | Q144 et Q146 faits, **Q145 non exécuté** (VT-x) |
+| 28 | Q147 à Q152 | ConfigMap, Secret, PVC, Ingress | Fait |
+| 29 | Q153 à Q155 | HTTPS avec cert-manager | Fait |
+| 30 | Q156 à Q160 | Ressources, sondes, HPA | Fait |
+| 31 | Q161 à Q166 | RBAC, securityContext, Pod Security Standards | Fait |
+| 32 | Q167 à Q170 | NetworkPolicies, Cilium | Q167 à Q169 faits, **Q170 non exécuté** (RAM) |
+| 33 | Q171 à Q177 | Kyverno, OPA Gatekeeper | Fait |
+| 34 | Q178 à Q184 | Sealed Secrets, Vault, External Secrets | Fait |
+| 35 | Q185 à Q189 | Trivy Operator, Kubescape, Falco | Fait |
+
+---
+
+# Section 26 : K3s et premiers objets (Q136 à Q143)
+
+## Q136 : installer K3s
+K3s est une distribution Kubernetes légère, installée avec le script officiel `get.k3s.io`. La **version est figée** (`v1.37.2+k3s1`) pour que l'installation soit reproductible ; l'installation est ensuite faite par Ansible (section 27). K3s embarque Traefik (Ingress), `local-path` (stockage), metrics-server et un contrôleur NetworkPolicy.
+
+## Q137 : le nœud et les pods système
+```bash
+kubectl get nodes
+kubectl get pods -A
+```
+![Nœud et pods K3s](docs/captures/q137-k3s-nodes-pods.png)
+
+## Q138 à Q142 : namespace, Deployments, Services
+Le namespace `portfolio` (`k8s/00-namespace.yaml`) isole l'application. Trois Deployments (`postgres`, `api`, `frontend`) et trois Services : `postgres` et `api` en `ClusterIP`, `frontend` en `NodePort` (30080).
+
+```bash
+kubectl get pods,svc,deploy -n portfolio
+```
+![Pods, services, deployments](docs/captures/q138-q142-kubectl-get.png)
+![Suite : namespace, services, deployments](docs/captures/q138-q142-kubectl-get-suite.png)
+
+**Images locales.** Les images `devsecops-portfolio:1.0` et `devsecops-api:1.0` sont construites avec Docker puis importées dans le containerd de K3s, car K3s n'utilise pas le démon Docker :
+```bash
+docker save devsecops-api:1.0 | sudo k3s ctr images import -
+```
+Les Deployments utilisent `imagePullPolicy: Never` et un tag précis (`1.0`, jamais `:latest`).
+
+## Q143 : le frontend joint l'API par le nom du Service
+Le frontend lit `API_URL=http://api:4000` : c'est le nom DNS du Service `api`, résolu par le cluster. Le navigateur affiche le badge « Données fournies par l'API Express ».
+
+```bash
+kubectl exec -n portfolio deploy/frontend -- wget -qO- http://api:4000/api/health
+```
+![Frontend vers API](docs/captures/q143-frontend-api.png)
+![Site via le NodePort 30080](docs/captures/q143-navigateur-nodeport.png)
+
+### Difficulté : AppArmor bloque PostgreSQL
+Sur Ubuntu 26.04 (noyau 7.0), le profil AppArmor par défaut de containerd bloquait les signaux du conteneur PostgreSQL (`DENIED` dans `dmesg`) : le processus tournait en boucle ou échouait avec `permission denied` sur `pg_ctl`. Contournement : `appArmorProfile: Unconfined` sur le pod PostgreSQL, avec un utilisateur non-root (uid 70). C'est un compromis documenté : il empêche ce pod de respecter le niveau Pod Security *baseline* (voir section 31).
+
+---
+
+# Section 27 : Ansible, Vagrant et reconstruction (Q144 à Q146)
+
+## Q144 : un rôle Ansible pour K3s
+Le playbook `ansible/k3s/site.yml` prépare la VM avec trois rôles : `ssh` (serveur SSH durci, pas de connexion root), `docker` (Docker, Compose, Buildx) et `k3s` (installation à version figée, attente que le nœud soit `Ready`). Le rôle accepte `k3s_state: present` ou `absent` (désinstallation complète).
+
+```bash
+cd ansible/k3s
+~/ansible-venv/bin/ansible-playbook -i inventory-local.ini site.yml -e docker_user=$USER -K
+```
+Résultat : `ok=14 changed=3 failed=0`, nœud `v1.37.2+k3s1`.
+
+![Playbook Ansible K3s](docs/captures/q144-ansible-k3s-role.png)
+![Nœud Ready](docs/captures/q144-kubectl-get-nodes.png)
+
+## Q145 : Vagrant (non exécuté)
+Le `Vagrantfile` est écrit (`vagrant/k3s/Vagrantfile`) : boîte `bento/ubuntu-24.04`, 2048 Mo, IP privée `192.168.56.50`, dossier `ansible/k3s` monté dans `/ansible`, puis le même `site.yml` lancé par le provisionneur `ansible_local`.
+
+```mermaid
+flowchart LR
+  V[vagrant up] --> VM[VM Ubuntu 24.04]
+  VM --> AL[ansible_local<br/>site.yml]
+  AL --> S[SSH durci]
+  AL --> D[Docker]
+  AL --> K[K3s]
+```
+
+**Limite :** `vagrant up` n'a pas pu être exécuté. Notre VM est elle-même une machine VMware, et la virtualisation imbriquée (VT-x) n'est pas activée : VirtualBox refuse de démarrer une VM (`VT-x is not available`). Le fichier et le schéma sont fournis, mais **aucune capture de démarrage n'est présentée**, pour ne pas en inventer. Pour l'exécuter : éteindre la VM, activer « Virtualize Intel VT-x/EPT » dans les paramètres VMware, puis lancer `vagrant up`.
+
+## Q146 : reconstruire le cluster en une commande
+`automation/k8s-rebuild.sh` détruit puis recrée tout : désinstallation de K3s, installation (Ansible), import des images, création du Secret, `kubectl apply -f k8s`, attente des Deployments et test du NodePort. Le mot de passe sudo est lu au clavier et passé par variable d'environnement, jamais écrit dans un fichier.
+
+```bash
+time ./automation/k8s-rebuild.sh
+```
+Résultat mesuré : **cluster recréé et portfolio redéployé en 161 secondes**.
+
+![Avant la reconstruction](docs/captures/q146-avant-rebuild.png)
+![Reconstruction complète](docs/captures/q146-k8s-rebuild-sortie.png)
+
+---
+
+# Section 28 : ConfigMap, Secret, PVC et Ingress (Q147 à Q152)
+
+## Q147 : ConfigMap
+`k8s/05-configmap.yaml` (`portfolio-config`) regroupe la configuration non secrète : `API_URL`, `PORT`, `CORS_ORIGIN`, `POSTGRES_HOST`, `POSTGRES_USER`, `POSTGRES_DB`. Les pods la lisent avec `configMapKeyRef`.
+
+## Q148 : Secret
+Le mot de passe de la base n'est **jamais dans Git**. `k8s/create-secret.sh` génère un mot de passe aléatoire, crée le Secret `portfolio-secret` et ne l'affiche pas (le script est idempotent). L'API construit `DATABASE_URL` à partir de variables avec la syntaxe `$(VAR)`.
+
+```bash
+./k8s/create-secret.sh
+kubectl get secret portfolio-secret -n portfolio
+```
+![Secret créé](docs/captures/q148-secret.png)
+
+## Déploiement avec ces objets (Q147 à Q151)
+PostgreSQL, l'API et le frontend lisent la ConfigMap et le Secret. L'API lance `prisma migrate deploy` au démarrage, donc elle redémarre tant que la base n'est pas prête (visible dans `RESTARTS`).
+
+```bash
+kubectl apply -f k8s
+```
+![Déploiement complet](docs/captures/q147-q151-deploiement-k8s.png)
+
+## Q150 : volume persistant (PVC)
+`postgres-data` (1 Gi, classe `local-path`) est monté dans `/var/lib/postgresql/data`, avec `PGDATA` dans un sous-dossier. La stratégie du Deployment est `Recreate`, car un seul pod peut utiliser le volume. **Preuve de persistance :** une ligne « Test PVC » insérée en base survit à la suppression du pod.
+
+![Persistance des données](docs/captures/q150-persistance.png)
+
+## Q152 : Ingress
+Traefik (inclus dans K3s) publie le site sous `portfolio.local` : `/api/contact` vers le frontend (route Next.js), `/api` vers l'API, `/` vers le frontend. Sur le poste Windows, une ligne dans le fichier `hosts` associe `portfolio.local` à `192.168.190.141`. Le pare-feu autorise les ports 80 et 443.
+
+```bash
+curl -s -o /dev/null -w "frontend : %{http_code}\n" -H "Host: portfolio.local" http://localhost/
+curl -s -H "Host: portfolio.local" http://localhost/api/health
+```
+![PVC et test Ingress](docs/captures/q152-curl-ingress.png)
+![Test Ingress, après quelques minutes](docs/captures/q152-curl-ingress-2.png)
+![Site via portfolio.local](docs/captures/q152-portfolio-local.png)
+![API via portfolio.local](docs/captures/q152-portfolio-local-api.png)
+
+---
+
+# Section 29 : HTTPS avec cert-manager (Q153 à Q155)
+
+## Q153 : installer cert-manager
+Helm est installé avec le script officiel (somme de contrôle vérifiée), puis cert-manager `v1.21.3` avec ses CRD.
+```bash
+helm repo add jetstack https://charts.jetstack.io
+helm install cert-manager jetstack/cert-manager --namespace cert-manager --create-namespace --set crds.enabled=true
+```
+![Installation Helm](docs/captures/q153-helm-install-cert-manager.png)
+![Trois pods cert-manager](docs/captures/q153-cert-manager.png)
+
+## Q154 : une autorité de certification locale
+`k8s/60-tls.yaml` construit une chaîne : un `Issuer` auto-signé crée un certificat d'autorité (`portfolio-ca`), un second `Issuer` s'appuie sur cette autorité, et il signe le certificat du site (`portfolio-tls`, `portfolio.local`, durée 2160 h, renouvellement 360 h avant l'échéance).
+
+```bash
+kubectl get certificate -n portfolio
+```
+![Issuers et Certificates](docs/captures/q154-issuer-certificate.png)
+
+## Q155 : l'Ingress passe en HTTPS
+`k8s/50-ingress.yaml` contient deux Ingress : `portfolio` (entrée `websecure`, secret TLS `portfolio-tls`) et `portfolio-http`, qui redirige le port 80 vers HTTPS grâce à un `Middleware` Traefik. Pour que Chrome fasse confiance au certificat, l'autorité locale est importée dans le magasin utilisateur de Windows (`certutil -user -addstore Root`).
+
+```bash
+curl -sk -o /dev/null -w "HTTPS : %{http_code}\n" --resolve portfolio.local:443:127.0.0.1 https://portfolio.local/
+curl -s -o /dev/null -w "HTTP  : %{http_code} -> %{redirect_url}\n" -H "Host: portfolio.local" http://localhost/
+```
+Résultat : `HTTPS : 200` et `HTTP : 301 -> https://portfolio.local/`.
+
+![Redirection HTTP vers HTTPS](docs/captures/q155-https-redirect.png)
+![Certificats et Ingress](docs/captures/q155-get-certificate.png)
+![Site en HTTPS dans le navigateur, sans avertissement](docs/captures/q155-https-navigateur.png)
+
+---
+
+# Section 30 : ressources, sondes et HPA (Q156 à Q160)
+
+## Requests et limits
+Chaque conteneur déclare ses ressources : requêtes `100m` CPU et `128Mi`, limites `500m` CPU et `256Mi` (API) ou `384Mi` (frontend, PostgreSQL). Les requêtes servent au placement et au calcul du HPA, les limites protègent la VM.
+
+## Q158 : sondes de santé
+L'API déclare trois sondes sur `/api/health:4000` : **startup** (période 2 s, 30 échecs permis, donc 60 s pour démarrer), **readiness** (10 s) et **liveness** (20 s). La sonde de démarrage empêche Kubernetes de tuer l'API pendant `prisma migrate deploy`. Le message `Startup probe failed … connection refused` visible dans la capture est normal au démarrage.
+
+```bash
+kubectl describe pod -n portfolio -l app=api | grep -E 'Liveness|Readiness|Startup|Limits|Requests|cpu|memory'
+```
+![Sondes et ressources](docs/captures/q158-describe-pod.png)
+
+## Q160 : autoscaling horizontal (HPA)
+`k8s/60-hpa.yaml` : HPA `autoscaling/v2` sur le Deployment `api`, entre **1 et 3 réplicas**, cible **70 % de CPU** (mesuré par metrics-server, inclus dans K3s).
+
+```bash
+kubectl get hpa -n portfolio
+```
+![HPA](docs/captures/q160-get-hpa.png)
+
+Lors d'un test de charge, l'API est montée à 3 réplicas puis redescendue. *(Capture de la montée à 3 réplicas : à compléter.)*
+
+---
+
+# Section 31 : RBAC, securityContext et Pod Security Standards (Q161 à Q166)
+
+## Q161 à Q163 : RBAC minimal
+`k8s/70-rbac.yaml` crée un `ServiceAccount` `portfolio-app` (avec `automountServiceAccountToken: false`), un `Role` `portfolio-config-reader` qui n'autorise que `get` sur le ConfigMap `portfolio-config`, et le `RoleBinding` correspondant.
+
+```bash
+kubectl get sa,role,rolebinding -n portfolio
+```
+![Objets RBAC](docs/captures/q161-q163-rbac-objets.png)
+
+## Q164 : vérifier avec `kubectl auth can-i`
+```bash
+SA=system:serviceaccount:portfolio:portfolio-app
+kubectl auth can-i get configmaps/portfolio-config -n portfolio --as=$SA   # yes
+kubectl auth can-i list configmaps -n portfolio --as=$SA                    # no
+kubectl auth can-i get secrets -n portfolio --as=$SA                        # no
+kubectl auth can-i delete pods -n portfolio --as=$SA                        # no
+```
+Seule la lecture du ConfigMap voulu est permise ; lister les ConfigMaps ou les Secrets, supprimer des pods, créer des Deployments ou agir dans un autre namespace est refusé.
+
+![can-i](docs/captures/q164-auth-can-i.png)
+
+## Q165 : securityContext
+Frontend et API tournent en **non-root** (`runAsNonRoot`, uid 100 / gid 101 pour le frontend, uid 1000 pour l'API), avec `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]` et `seccompProfile: RuntimeDefault`. La capture prouve l'uid réel dans les pods.
+
+![securityContext](docs/captures/q165-securitycontext.png)
+
+## Q166 : Pod Security Standards
+Le namespace `portfolio` porte les labels `pod-security.kubernetes.io/warn=restricted` et `audit=restricted` : le niveau restricted **avertit et journalise**, sans refuser. Ce choix est volontaire : PostgreSQL doit rester en `appArmorProfile: Unconfined` (voir Q143), ce qui est incompatible avec *baseline* en mode `enforce`.
+
+La démonstration de refus se fait dans deux namespaces temporaires :
+
+| Test | Namespace | Pod | Résultat |
+|---|---|---|---|
+| A | `pss-baseline` (enforce baseline) | pod privilégié | **refusé** |
+| B | `pss-restricted` (enforce restricted) | pod standard (root) | **refusé** |
+| C | `pss-baseline` | le même pod standard | accepté |
+| D | `pss-restricted` | pod conforme | accepté |
+
+![Labels du namespace](docs/captures/q166-labels-namespace.png)
+![Pod refusé en restricted](docs/captures/q166-pod-refuse-restricted.png)
+![Tests A à D](docs/captures/q166-pss-tests-a-d.png)
+
+---
+
+# Section 32 : NetworkPolicies (Q167 à Q170)
+
+## Q167 et Q168 : tout interdire, puis ouvrir au strict nécessaire
+`k8s/80-networkpolicies.yaml` applique une stratégie *deny by default* :
+- `default-deny-all` : aucun trafic entrant ni sortant ;
+- `allow-dns` : sortie vers le DNS du cluster ;
+- `frontend` : entrée depuis Traefik, sortie vers l'API ;
+- `api` : entrée depuis le frontend et Traefik, sortie vers PostgreSQL ;
+- `postgres` : entrée uniquement depuis l'API.
+
+```bash
+kubectl get networkpolicy -n portfolio
+```
+![NetworkPolicies](docs/captures/q167-q168-networkpolicies.png)
+
+## Q169 : tests
+Un pod « intrus » (`intruder`) essaie de joindre PostgreSQL. **Avant** les politiques, il y arrive ; **après**, la connexion est refusée. Le trafic légitime continue : frontend vers API réussit, **frontend vers PostgreSQL est bloqué**, et le site répond toujours `200` en HTTPS.
+
+![Avant les politiques : l'intrus passe](docs/captures/q169-avant.png)
+![Après : l'intrus est bloqué](docs/captures/q169-intrus-bloque.png)
+![Flux autorisés](docs/captures/q169-flux-autorises.png)
+
+## Q170 : Cilium et Hubble (non exécuté)
+Cilium remplace le CNI du cluster (K3s doit être installé avec `--flannel-backend=none` et sans contrôleur NetworkPolicy interne), ce qui impose de recréer un cluster. Sur cette VM (5,3 Go de RAM, déjà occupés par K3s, Kyverno et les autres composants), un second cluster avec Cilium, Hubble et son interface n'est pas réaliste. **Cette question n'est donc pas réalisée** ; les NetworkPolicies de Q167 à Q169 sont des NetworkPolicies Kubernetes standard, portables vers Cilium. Pour la faire : cluster `kind` ou `k3d` séparé, `cilium install`, `cilium hubble enable --ui`, puis `hubble observe`.
+
+---
+
+# Section 33 : Policy as Code, Kyverno et Gatekeeper (Q171 à Q177)
+
+## Q171 : installer Kyverno
+```bash
+helm repo add kyverno https://kyverno.github.io/kyverno/
+helm install kyverno kyverno/kyverno -n kyverno --create-namespace
+kubectl get pods -n kyverno
+```
+Kyverno 1.20 (chart 3.10.0) : quatre pods en `Running`.
+
+![Kyverno](docs/captures/q171-kyverno.png)
+
+## Q172 à Q175 : quatre politiques
+`k8s/policies/kyverno-policies.yaml` (hors du dossier appliqué par `kubectl apply -f k8s`, pour ne pas les mélanger au déploiement) contient quatre `ValidatingPolicy`, actives sur le namespace `portfolio`, pour les Pods **et** les Deployments :
+
+| Politique | Règle |
+|---|---|
+| `disallow-latest-tag` | l'image doit avoir un tag précis, pas `:latest` |
+| `disallow-privileged` | pas de conteneur privilégié |
+| `require-run-as-nonroot` | `runAsNonRoot: true` obligatoire |
+| `require-requests-limits` | requests et limits CPU/mémoire obligatoires |
+
+```bash
+kubectl get validatingpolicies
+```
+![ValidatingPolicies prêtes](docs/captures/q172-q175-validatingpolicy.png)
+
+### Difficulté : Kyverno 1.20 n'accepte plus `ClusterPolicy`
+Les `ClusterPolicy` classiques (`kyverno.io/v1`) ont été **supprimées dans Kyverno 1.20**. Elles sont refusées à l'application. Les politiques ont été réécrites avec le nouveau type `ValidatingPolicy` (`policies.kyverno.io/v1`), qui s'écrit en **CEL** (Common Expression Language) avec `matchConstraints` et `validationActions: [Deny]`.
+
+## Q176 : refus et acceptation
+Un Deployment volontairement non conforme (`nginx:latest`, privilégié, sans limites) est **refusé avec les quatre messages**. Le PodSecurity du namespace ajoute son propre avertissement `restricted:latest`, ce qui montre que les deux mécanismes se complètent. Les vrais Deployments (`kubectl apply` de `10`, `20`, `30`) restent acceptés (`unchanged`) et ne sont pas touchés.
+
+![Refus par Kyverno](docs/captures/q176-refus-kyverno.png)
+![Les Deployments conformes sont acceptés](docs/captures/q176-conformes-acceptes.png)
+
+## Q177 : OPA Gatekeeper, et comparaison avec Kyverno
+La règle « pas de `:latest` » est réécrite avec Gatekeeper dans un namespace séparé, `gk-demo`, pour ne pas chevaucher Kyverno. Gatekeeper v3.23.1 est installé avec Helm (`replicas=1`, `audit.replicas=1`).
+
+```bash
+helm repo add gatekeeper https://open-policy-agent.github.io/gatekeeper/charts
+helm install gatekeeper gatekeeper/gatekeeper -n gatekeeper-system --create-namespace --set replicas=1 --set audit.replicas=1
+```
+![Gatekeeper en marche](docs/captures/q177-gatekeeper.png)
+
+La règle s'écrit en deux objets. Le `ConstraintTemplate` contient la logique en **Rego** (`k8s/policies/gatekeeper-template.yaml`) :
+```rego
+package k8sdisallowlatesttag
+
+violation[{"msg": msg}] {
+  c := input.review.object.spec.containers[_]
+  endswith(c.image, ":latest")
+  msg := sprintf("conteneur %v : l'image %v utilise :latest", [c.name, c.image])
+}
+
+violation[{"msg": msg}] {
+  c := input.review.object.spec.containers[_]
+  parts := split(c.image, "/")
+  last := parts[count(parts) - 1]
+  not contains(last, ":")
+  not contains(last, "@")
+  msg := sprintf("conteneur %v : l'image %v n'a pas de tag (latest implicite)", [c.name, c.image])
+}
+```
+La `Constraint` (`k8s/policies/gatekeeper-constraint.yaml`) l'applique : `kind: K8sDisallowLatestTag`, `enforcementAction: deny`, pods du namespace `gk-demo`.
+
+![ConstraintTemplate et Constraint](docs/captures/q177-constrainttemplate.png)
+
+Tests : `nginx:latest` est **refusé**, `nginx` sans tag est **refusé**, `nginx:1.27` est **accepté**.
+
+![Refus et acceptation par Gatekeeper](docs/captures/q177-gatekeeper-refus.png)
+
+### Difficultés
+- **Image bloquée** : le téléchargement de `openpolicyagent/gatekeeper-crds` depuis containerd restait en `ContainerCreating` pendant plus de 7 minutes. Solution : `docker pull`, puis `docker save | sudo k3s ctr images import -`, comme pour les images de l'application.
+- **`import rego.v1` refusé** : Gatekeeper répond `invalid import: bad import: "rego.v1"`. Le champ `rego:` d'un `ConstraintTemplate` n'accepte que la syntaxe Rego classique (`violation[{"msg": msg}] { ... }`).
+
+### Kyverno ou Gatekeeper ?
+
+| Critère | Kyverno 1.20 | OPA Gatekeeper 3.23 |
+|---|---|---|
+| Langage | CEL dans un YAML natif Kubernetes | Rego, langage dédié à apprendre |
+| Objets | une seule politique | `ConstraintTemplate` + `Constraint` |
+| Courbe d'apprentissage | faible si on connaît Kubernetes | plus raide |
+| Installation sur ce lab | directe | image à importer à la main |
+| Audit des objets existants | rapports de politique | pod `audit` intégré |
+| Points forts | simplicité, mutation, génération | écosystème OPA, politiques très expressives et réutilisables |
+
+---
+
+# Section 34 : gérer les secrets (Q178 à Q184)
+
+Trois approches, du plus simple au plus complet.
+
+## Q178 : le problème
+Un `Secret` Kubernetes n'est qu'encodé en **base64**, pas chiffré : il se décode sans clé. Il ne peut donc pas être commité dans Git.
+
+```bash
+kubectl create secret generic demo-secret -n sealed-demo --from-literal=password='valeur-demo-1' --dry-run=client -o yaml
+grep password demo-secret.yaml | awk '{print $2}' | base64 -d     # valeur-demo-1
+```
+![Un Secret se décode sans clé](docs/captures/q178-secret-base64.png)
+
+## Q179 : Sealed Secrets, chiffrer pour Git
+Le contrôleur Sealed Secrets (chart 2.22.0, application 0.41.2) détient une clé privée dans le cluster. L'outil `kubeseal` chiffre un Secret avec la clé publique et produit un `SealedSecret`, **qu'on peut mettre dans Git** : seul le cluster sait le déchiffrer.
+
+```bash
+helm repo add sealed-secrets https://bitnami.github.io/sealed-secrets
+helm install sealed-secrets sealed-secrets/sealed-secrets -n sealed-secrets --create-namespace --set-string fullnameOverride=sealed-secrets-controller
+kubeseal --controller-name sealed-secrets-controller --controller-namespace sealed-secrets --format yaml < demo-secret.yaml > k8s/sealed/demo-sealedsecret.yaml
+```
+![Contrôleur Sealed Secrets](docs/captures/q179-sealed-secrets-controller.png)
+![SealedSecret chiffré](docs/captures/q179-sealedsecret-yaml.png)
+
+*Difficulté :* l'adresse du dépôt Helm a changé (`bitnami-labs.github.io` répondait 404 ; le projet est maintenant sous `bitnami.github.io/sealed-secrets`). L'image du contrôleur et l'outil `kubeseal` v0.41.2 ont aussi été téléchargés à part.
+
+## Q180 : le contrôleur recrée le Secret
+```bash
+kubectl apply -f k8s/sealed/demo-sealedsecret.yaml
+kubectl get sealedsecret,secret -n sealed-demo
+```
+Le `Secret` `demo-secret` est créé automatiquement et contient `valeur-demo-1`.
+
+![Secret recréé](docs/captures/q180-secret-recree.png)
+
+## Q181 : rotation
+On change la valeur, on la re-scelle, on réapplique : le texte chiffré change (`AgBJOU…` devient `AgB4TY…`) et le Secret du cluster est mis à jour (`valeur-demo-2-rotation`). Un pod qui utilise ce secret doit ensuite être redémarré (`kubectl rollout restart`).
+
+![Rotation](docs/captures/q181-rotation.png)
+
+## Q182 : Vault
+Vault 2.0.4 est installé en **mode dev** (un seul pod, sans stockage persistant, `injector` désactivé), uniquement pour la démonstration. Le jeton `root` du mode dev n'est valable qu'ici : en production, on utilise l'authentification Kubernetes et un Vault durci.
+
+```bash
+helm install vault hashicorp/vault -n vault --create-namespace --set server.dev.enabled=true --set server.dev.devRootToken=root --set injector.enabled=false
+```
+![Vault](docs/captures/q182-vault.png)
+
+## Q183 : stocker un secret dans Vault
+```bash
+vault kv put secret/portfolio/db password=valeur-vault-1
+vault kv get secret/portfolio/db
+```
+![Secret dans Vault](docs/captures/q183-vault-kv.png)
+
+## Q184 : External Secrets Operator
+ESO (image `external-secrets:v2.15.0`) lit le secret dans Vault et crée le `Secret` Kubernetes. Deux objets (`k8s/vault/`) : un `SecretStore` (où est Vault, quel jeton) et un `ExternalSecret` (quel secret recopier, `refreshInterval: 15s`). Le jeton démo est créé à la main dans le namespace, jamais dans Git.
+
+```bash
+kubectl get secretstore,externalsecret -n eso-demo
+kubectl get secret db-secret -n eso-demo -o jsonpath='{.data.password}' | base64 -d     # valeur-vault-1
+```
+![ESO installé](docs/captures/q184-eso.png)
+![ExternalSecret synchronisé](docs/captures/q184-externalsecret.png)
+
+**Rotation côté Vault** : on change la valeur dans Vault ; sans aucune commande Kubernetes, ESO met `db-secret` à jour au cycle suivant (`valeur-vault-2-rotation`).
+
+![Rotation depuis Vault](docs/captures/q184-rotation-vault.png)
+
+### Sealed Secrets ou Vault + ESO ?
+
+| Critère | Sealed Secrets | Vault + ESO |
+|---|---|---|
+| Où est le secret | chiffré **dans Git** | dans **Vault**, hors Git |
+| Source de vérité | le dépôt Git | le coffre Vault |
+| Rotation | re-sceller et commiter | changer la valeur dans Vault, ESO resynchronise |
+| Complexité et RAM | légère (1 pod) | Vault + 3 pods ESO |
+| Audit et droits | limités | fins (politiques, journal d'audit) |
+| Idéal pour | GitOps simple, petite équipe | secrets partagés, entreprise |
+
+---
+
+# Section 35 : analyser et surveiller (Q185 à Q189)
+
+## Q185 et Q186 : Trivy Operator
+Trivy Operator (chart 0.38.1, application 0.36.1, scanner Trivy 0.76.1) scanne en continu ce qui tourne dans le cluster : vulnérabilités des images, audit des manifests, droits RBAC. Il est limité aux namespaces `portfolio` (puis `trivy-demo`) avec un seul scan à la fois, pour ménager la RAM.
+
+```bash
+helm install trivy-operator aqua/trivy-operator -n trivy-system --create-namespace --set targetNamespaces=portfolio --set operator.scanJobsConcurrentLimit=1
+kubectl get vulnerabilityreports -A -o wide
+kubectl get configauditreports -A
+kubectl get rbacassessmentreports -n portfolio
+```
+![Trivy Operator](docs/captures/q185-trivy-operator.png)
+
+**Rapports d'audit** : 14 `configauditreports` sur `portfolio` (Ingress, NetworkPolicies, PVC, ReplicaSets, Services), un sur `trivy-demo`, et un rapport RBAC pour le Role `portfolio-config-reader`.
+
+![Rapports d'audit de configuration](docs/captures/q186-configauditreports.png)
+
+**Rapport de vulnérabilités** : `postgres:16-alpine` compte **1 CRITICAL, 8 HIGH, 4 MEDIUM, 0 LOW** et 75 UNKNOWN. Les CRITICAL et HIGH sont à traiter en priorité (version corrigée de l'image) ; UNKNOWN désigne des failles sans gravité attribuée.
+
+![Rapport de vulnérabilités](docs/captures/q186-vulnerabilityreports.png)
+
+**Limite :** les images `devsecops-portfolio:1.0` et `devsecops-api:1.0` ne sont **pas scannables par l'opérateur** : elles n'existent que dans le containerd local (`imagePullPolicy: Never`), le job de scan n'a pas accès à ce socket et Docker Hub répond `UNAUTHORIZED`. Elles sont déjà scannées par Trivy dans la CI (sections précédentes).
+
+![Images locales introuvables](docs/captures/q186-limite-images-locales.png)
+
+Les rapports sont conservés dans `docs/trivy-operator-rapports.txt`. Chaque job de scan retélécharge la base de vulnérabilités (133 Mo, environ 2 minutes), ce qui explique l'attente avant l'apparition des rapports.
+
+## Q187 : Kubescape
+Kubescape v4.0.20 (installé par le script officiel, somme de contrôle vérifiée) évalue le namespace `portfolio` avec le framework **NSA/CISA**.
+
+```bash
+kubescape scan framework nsa --include-namespaces portfolio
+```
+**Avant :** score de conformité **73,11 %**, 4 ressources en échec sur 29, six contrôles en échec.
+
+![Kubescape, avant](docs/captures/q187-kubescape-nsa.png)
+
+Trois échecs venaient de PostgreSQL et ont été corrigés dans `k8s/10-postgres.yaml` : `allowPrivilegeEscalation: false` et `capabilities.drop: [ALL]` (contrôles *Allow privilege escalation* et *Linux hardening*), `seccompProfile: RuntimeDefault`, et `automountServiceAccountToken: false` (contrôle *Automatic mapping of service account*). PostgreSQL redémarre normalement avec ces restrictions, et le site répond toujours.
+
+**Après :** score **76,44 %**.
+
+![Kubescape, après](docs/captures/q187-kubescape-apres.png)
+
+Échecs restants, **volontairement non corrigés** :
+
+| Contrôle | Raison |
+|---|---|
+| *Administrative Roles* et *Prevent containers from allowing command execution* | faux positifs : la ressource en cause est le groupe intégré `system:masters` de K3s, pas un Role du projet |
+| *Immutable container filesystem* (3/3) | PostgreSQL, Next.js et Express ont besoin d'écrire (données, cache, `/tmp`) ; un système de fichiers en lecture seule risquerait de casser des pods qui fonctionnent. Risque accepté |
+
+La couverture du scan est de 83 % (24 contrôles sur 26) : `C-0069` et `C-0070` exigent l'opérateur Kubescape, et les contrôles `ClusterDescribe` concernent les clouds GKE, EKS et AKS, pas K3s.
+
+## Q188 et Q189 : Falco
+Falco 0.45.2 (chart 9.2.2) surveille les appels système des conteneurs avec le pilote **modern eBPF**, sans compilation de module noyau. Les règles sont téléchargées au démarrage par `falcoctl`.
+
+```bash
+helm install falco falcosecurity/falco -n falco --create-namespace --set driver.kind=modern_ebpf --set tty=true \
+  --set resources.requests.memory=256Mi --set resources.limits.memory=768Mi
+```
+*(Capture de l'état des pods Falco, `2/2 Running` : à compléter.)*
+
+**Faux positif observé :** dès le démarrage, Falco signale `Redirect stdout/stdin to network connection` pour le script de healthcheck du conteneur Docker Floci (`container_name=devsecops-floci`). La règle est correcte, mais le comportement est légitime : c'est un exemple de réglage de règle à prévoir (exception pour ce conteneur).
+
+**Attaque simulée (Q189).** Un intrus ouvre un shell dans le pod frontend :
+```bash
+kubectl exec -it deploy/frontend -n portfolio -- sh
+cat /etc/shadow     # Permission denied : le pod est non-root
+```
+Falco détecte l'ouverture du shell, avec l'utilisateur `nextjs` (uid 100), le conteneur `frontend`, le pod `frontend-8886b9fd-86x92` et le namespace `portfolio` :
+```
+Notice A shell was spawned in a container with an attached terminal | user=nextjs user_uid=100
+  process=sh container_name=frontend k8s_pod_name=frontend-8886b9fd-86x92 k8s_ns_name=portfolio
+```
+Le refus de `cat /etc/shadow` montre aussi l'effet du `securityContext` de la section 31.
+
+![Alerte Falco](docs/captures/q189-falco-alerte.png)
+
+L'alerte est conservée dans `docs/falco-alertes.txt`.
+
+---
+
+# Difficultés rencontrées sur l'activité 7
+
+| Problème | Cause | Solution |
+|---|---|---|
+| PostgreSQL en boucle ou `permission denied` sur `pg_ctl` | profil AppArmor de containerd (Ubuntu 26.04, noyau 7.0) bloque les signaux | `appArmorProfile: Unconfined` et uid 70 non-root, documenté comme compromis |
+| `x509: certificate signed by unknown authority` après recréation du cluster | l'ancien kubeconfig référence l'ancienne autorité | recopier le nouveau kubeconfig |
+| `vagrant up` impossible | VT-x indisponible dans la VM VMware | Q145 documenté sans exécution |
+| Kyverno refuse `ClusterPolicy` | type supprimé dans Kyverno 1.20 | réécriture en `ValidatingPolicy` (CEL) |
+| Gatekeeper reste en `ContainerCreating` | pull de l'image trop lent depuis containerd | `docker pull`, puis import dans K3s |
+| `ConstraintTemplate` refusé | `import rego.v1` non accepté | syntaxe Rego classique |
+| `helm repo add sealed-secrets` répond 404 | le dépôt a déménagé de `bitnami-labs` vers `bitnami` | nouvelle URL |
+| Trivy Operator : pas de rapport pour nos images | images locales introuvables par le job de scan | scan d'images publiques, limite documentée |
+| Collage de commandes multi-lignes qui vide un fichier | une ligne commençant par `\|` est rejetée, la redirection `>` s'exécute seule | restaurer le fichier, une commande par ligne |
+
+# Captures à compléter
+
+Ces captures n'ont pas pu être prises ou n'existent pas : elles sont signalées dans le texte, rien n'a été inventé.
+
+- Q145 : démarrage de la VM Vagrant (VT-x indisponible).
+- Q160 : montée de l'API à 3 réplicas sous charge.
+- Q170 : Cilium et Hubble (RAM insuffisante).
+- Q188 : pods Falco en `2/2 Running`.
+
+---
+
 # Avancement général
 
 | Partie | Questions | État |
@@ -1819,3 +2390,13 @@ Aucune étape manuelle : le bucket du state et la table de verrou sont recréés
 | Section 23 : Terraform, les bases | 118-123 | ✅ fait |
 | Section 24 : Terraform avancé | 124-133 | ✅ fait |
 | Section 25 : Terraform et Ansible | 134-135 | ✅ fait |
+| Section 26 : K3s et premiers objets | 136-143 | ✅ fait |
+| Section 27 : Ansible, Vagrant, reconstruction | 144-146 | ⚠️ fait sauf Q145 (VT-x indisponible) |
+| Section 28 : ConfigMap, Secret, PVC, Ingress | 147-152 | ✅ fait |
+| Section 29 : HTTPS avec cert-manager | 153-155 | ✅ fait |
+| Section 30 : ressources, sondes, HPA | 156-160 | ✅ fait |
+| Section 31 : RBAC, securityContext, PSS | 161-166 | ✅ fait |
+| Section 32 : NetworkPolicies | 167-170 | ⚠️ fait sauf Q170 (Cilium, RAM insuffisante) |
+| Section 33 : Kyverno et Gatekeeper | 171-177 | ✅ fait |
+| Section 34 : Sealed Secrets, Vault, ESO | 178-184 | ✅ fait |
+| Section 35 : Trivy Operator, Kubescape, Falco | 185-189 | ✅ fait |

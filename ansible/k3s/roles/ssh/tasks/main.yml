@@ -1,0 +1,21 @@
+---
+- name: Installer le serveur SSH
+  ansible.builtin.apt:
+    name: openssh-server
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Durcir la configuration SSH (pas de connexion root)
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/10-hardening.conf
+    content: |
+      PermitRootLogin no
+    mode: "0644"
+  notify: Redémarrer SSH
+
+- name: Activer et démarrer SSH
+  ansible.builtin.service:
+    name: ssh
+    state: started
+    enabled: true

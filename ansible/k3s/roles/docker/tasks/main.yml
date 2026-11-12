@@ -1,0 +1,23 @@
+---
+- name: Installer Docker, Compose et Buildx
+  ansible.builtin.apt:
+    name:
+      - docker.io
+      - docker-compose-v2
+      - docker-buildx
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Démarrer Docker et l'activer au démarrage
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Autoriser l'utilisateur de la VM à utiliser Docker
+  ansible.builtin.user:
+    name: "{{ docker_user }}"
+    groups: docker
+    append: true
+  when: docker_user | length > 0

@@ -1,0 +1,3 @@
+# Alertes Falco sur le namespace portfolio (Q189)
+
+23:15:47.787824885: Notice A shell was spawned in a container with an attached terminal | evt_type=execve user=nextjs user_uid=100 user_loginuid=-1 process=sh proc_exepath=/bin/busybox parent=systemd command=sh terminal=34816 exe_flags=EXE_LOWER_LAYER container_id=062a0ffc5990 container_name=frontend container_image_repository=docker.io/library/devsecops-portfolio container_image_tag=1.0 k8s_pod_name=frontend-8886b9fd-86x92 k8s_ns_name=portfolio
