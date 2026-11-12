@@ -3,3 +3,4 @@
 # privée du cluster peut le déchiffrer, et ce contrôleur a été désinstallé.
 5bbe89f77eb1ca8ca074bb1bb24ec6a8a039847b:k8s/sealed/demo-sealedsecret.yaml:generic-api-key:9
 k8s/sealed/demo-sealedsecret.yaml:generic-api-key:9
+/src/k8s/sealed/demo-sealedsecret.yaml:generic-api-key:9
