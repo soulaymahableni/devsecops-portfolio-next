@@ -1,0 +1,5 @@
+### Test 1 : pod avec l'image SIGNEE (attendu : accepte)
+pod/image-signee created
+
+### Test 2 : pod avec l'image NON SIGNEE (attendu : refuse)
+Error from server: error when creating "STDIN": admission webhook "ivpol.validate.kyverno.svc-fail-finegrained-verifier-images-harbor" denied the request: Policy verifier-images-harbor failed: Image refusee : signature Cosign absente ou invalide
