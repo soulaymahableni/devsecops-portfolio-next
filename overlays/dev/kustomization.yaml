@@ -6,9 +6,9 @@ resources:
   - ../../base
 replicas:
   - name: frontend
-    count: 1
+    count: 2
   - name: api
-    count: 1
+    count: 2
 images:
   - name: devsecops-portfolio
     newName: 192.168.190.141:8085/portfolio/devsecops-portfolio
