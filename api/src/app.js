@@ -4,6 +4,7 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const { z } = require("zod");
 const prisma = require("./db");
+const { observability, metricsHandler } = require("./observability");
 const { publishContact } = require("./aws");
 const { profile, projects, skills } = require("./data/portfolio");
 
@@ -11,9 +12,11 @@ const app = express(); // nosemgrep: javascript.express.security.audit.express-c
 
 app.disable("x-powered-by");
 app.set("trust proxy", 1); // l'API est derrière le frontend Next (proxy)
+app.use(observability); // Q220-Q223
 app.use(helmet()); // Q50
 app.use(cors({ origin: process.env.CORS_ORIGIN || "http://localhost:3000" }));
 app.use(express.json({ limit: "10kb" }));
+app.get("/metrics", metricsHandler); // Q220 : lu par Prometheus, hors /api donc non expose par Ingress
 
 // Routes existantes
 app.get("/api/health", (req, res) => {

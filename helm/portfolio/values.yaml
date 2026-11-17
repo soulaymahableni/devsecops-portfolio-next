@@ -1,0 +1,45 @@
+# Q192 : valeurs configurables du chart
+frontend:
+  image:
+    repository: devsecops-portfolio
+    tag: "1.0"
+    pullPolicy: Never
+  replicas: 1
+  port: 3000
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 384Mi }
+
+api:
+  image:
+    repository: devsecops-api
+    tag: "1.0"
+    pullPolicy: Never
+  replicas: 1
+  port: 4000
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+
+config:
+  apiUrl: http://api:4000
+  corsOrigin: http://helm.portfolio.local
+  postgresHost: postgres
+  postgresUser: portfolio
+  postgresDb: portfolio
+
+# Secret créé à la main (jamais dans Git) : clé POSTGRES_PASSWORD
+secretName: portfolio-secret
+
+postgres:
+  enabled: true
+  image: postgres:16-alpine
+  storage: 1Gi
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 384Mi }
+
+ingress:
+  enabled: true
+  className: traefik
+  host: helm.portfolio.local

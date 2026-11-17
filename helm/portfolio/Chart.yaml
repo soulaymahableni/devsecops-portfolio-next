@@ -1,0 +1,7 @@
+# Q191 : chart Helm du portfolio (frontend Next.js + API Express)
+apiVersion: v2
+name: portfolio
+description: Chart Helm du portfolio DevSecOps (frontend, API, base de données optionnelle)
+type: application
+version: 0.1.0
+appVersion: "1.0"

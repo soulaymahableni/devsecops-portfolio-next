@@ -167,5 +167,22 @@ pipeline {
         }
       }
     }
+
+    // Q216 : le pipeline ne deploie pas, il met a jour Git (dev). Argo CD synchronise.
+    // Staging/prod : promotion par Git (relecture), jamais de rebuild.
+    stage('Mise a jour GitOps') {
+      steps {
+        withCredentials([string(credentialsId: 'gitops-token', variable: 'GITOPS_TOKEN')]) {
+          sh '''
+            set -e
+            for img in api portfolio; do
+              DIGEST=$(grep -o 'digest: sha256:[a-f0-9]*' push-$img.log | tail -1 | awk '{print $2}')
+              test -n "$DIGEST"
+              DRY_RUN=0 bash automation/gitops-update.sh dev $img $DIGEST
+            done
+          '''
+        }
+      }
+    }
   }
 }

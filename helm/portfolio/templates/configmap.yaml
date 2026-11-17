@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: portfolio-config
+data:
+  API_URL: {{ .Values.config.apiUrl | quote }}
+  PORT: {{ .Values.api.port | quote }}
+  CORS_ORIGIN: {{ .Values.config.corsOrigin | quote }}
+  POSTGRES_HOST: {{ .Values.config.postgresHost | quote }}
+  POSTGRES_USER: {{ .Values.config.postgresUser | quote }}
+  POSTGRES_DB: {{ .Values.config.postgresDb | quote }}

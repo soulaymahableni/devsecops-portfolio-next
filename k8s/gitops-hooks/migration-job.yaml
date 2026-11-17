@@ -1,0 +1,32 @@
+# Q218 : migrations Prisma executees AVANT la nouvelle version de l'API, par Argo CD.
+# Hook Sync (vague 1) : s'execute apres les ressources de la vague 0 (dont Postgres),
+# donc aussi sur un environnement vierge ; un PreSync echouerait faute de base.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: api-migrate
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, seccompProfile: {type: RuntimeDefault}}
+      imagePullSecrets: [{name: harbor-pull}]
+      containers:
+        - name: migrate
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          image: 192.168.190.141:8085/portfolio/devsecops-api:1.0
+          command: ["npx", "prisma", "migrate", "deploy"]
+          env:
+            - {name: POSTGRES_HOST, valueFrom: {configMapKeyRef: {name: portfolio-config, key: POSTGRES_HOST}}}
+            - {name: POSTGRES_USER, valueFrom: {configMapKeyRef: {name: portfolio-config, key: POSTGRES_USER}}}
+            - {name: POSTGRES_DB, valueFrom: {configMapKeyRef: {name: portfolio-config, key: POSTGRES_DB}}}
+            - {name: POSTGRES_PASSWORD, valueFrom: {secretKeyRef: {name: portfolio-secret, key: POSTGRES_PASSWORD}}}
+            # meme composition que l'API (k8s/30-api-deployment.yaml)
+            - name: DATABASE_URL
+              value: postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(POSTGRES_HOST):5432/$(POSTGRES_DB)?schema=public

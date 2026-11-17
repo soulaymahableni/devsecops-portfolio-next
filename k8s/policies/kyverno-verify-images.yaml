@@ -1,0 +1,41 @@
+# Q203-Q204 : refuse tout pod dont l'image Harbor n'est pas signee avec la cle cosign-harbor.pub
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: verifier-images-harbor
+spec:
+  validationActions: [Deny]
+  evaluation:
+    background:
+      enabled: false
+  webhookConfiguration:
+    timeoutSeconds: 20
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        verify-images: enabled
+    resourceRules:
+      - apiGroups: ['']
+        apiVersions: ['v1']
+        operations: ['CREATE', 'UPDATE']
+        resources: ['pods']
+  matchImageReferences:
+    - glob: '192.168.190.141:8085/portfolio/*'
+  credentials:
+    secrets: [harbor-pull]
+  attestors:
+    - name: cosign
+      cosign:
+        key:
+          data: |
+            -----BEGIN PUBLIC KEY-----
+            MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAExHHxiVM7ITsIGf8XSbUcftUe1Noz
+            mVnWZchxtYr/9dZHL4ky/QRqxiBQkgtAqVEejX6tssv9uqfHlAiIGtgWAQ==
+            -----END PUBLIC KEY-----
+        ctlog:
+          insecureIgnoreSCT: true
+          insecureIgnoreTlog: true
+  validations:
+    - expression: >-
+        images.containers.map(image, verifyImageSignatures(image, [attestors.cosign])).all(e, e > 0)
+      message: 'Image refusee : signature Cosign absente ou invalide'

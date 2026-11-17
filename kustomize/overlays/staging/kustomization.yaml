@@ -1,0 +1,22 @@
+# Q197-Q198 : environnement staging (2 replica(s) frontend et API)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: portfolio-staging
+resources:
+  - ../../base
+replicas:
+  - name: frontend
+    count: 2
+  - name: api
+    count: 2
+patches:
+  - target:
+      kind: ConfigMap
+      name: portfolio-config
+    patch: |-
+      - op: replace
+        path: /data/API_URL
+        value: http://api.portfolio-staging.svc.cluster.local:4000
+      - op: replace
+        path: /data/CORS_ORIGIN
+        value: https://staging.portfolio.local
