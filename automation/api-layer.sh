@@ -5,7 +5,7 @@ set -euo pipefail
 export LC_ALL=C
 cd "$(dirname "$0")/../api"
 BASE=localhost:8085/portfolio/devsecops-api:1.0
-IMG=localhost:8085/portfolio/devsecops-api:1.2
+IMG=localhost:8085/portfolio/devsecops-api:${1:-1.2}
 CTX=$(mktemp -d); trap 'rm -rf "$CTX"' EXIT
 lister() { ls -1 | grep -v '^@' || true; ls -1d @*/* 2>/dev/null || true; }
 docker run --rm --entrypoint sh "$BASE" -c "cd node_modules; $(declare -f lister); lister" | sort > "$CTX/image.txt"
@@ -13,7 +13,7 @@ docker run --rm --entrypoint sh "$BASE" -c "cd node_modules; $(declare -f lister
 # seulement les paquets de PRODUCTION (l'image 1.0 est construite avec npm ci --omit=dev)
 { npm ls --omit=dev --all --parseable 2>/dev/null || true; } | sed 's#.*/node_modules/##' | sort -u > "$CTX/prod.txt"
 comm -13 "$CTX/image.txt" "$CTX/hote.txt" | comm -12 - "$CTX/prod.txt" > "$CTX/nouveaux.txt"
-test "$(wc -l < "$CTX/nouveaux.txt")" -le 10 || { echo "trop de paquets : verifier"; exit 1; }
+test "$(wc -l < "$CTX/nouveaux.txt")" -le 40 || { echo "trop de paquets : verifier"; exit 1; }
 test -s "$CTX/nouveaux.txt" || { echo "aucun paquet nouveau detecte"; exit 1; }
 echo "== paquets ajoutes a l'image :"; cat "$CTX/nouveaux.txt"
 mkdir -p "$CTX/ctx/node_modules"

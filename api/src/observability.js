@@ -1,6 +1,8 @@
 // Q220-Q223 : metriques Prometheus + identifiant de correlation + journal JSON
+// Q226-Q228 : traces OpenTelemetry (actives seulement si OTEL_EXPORTER_OTLP_ENDPOINT est defini)
 const client = require("prom-client");
 const { randomUUID } = require("crypto");
+const { SpanKind, SpanStatusCode } = require("@opentelemetry/api");
 
 const registry = new client.Registry();
 client.collectDefaultMetrics({ register: registry });
@@ -19,11 +21,39 @@ const httpDuration = new client.Histogram({
   registers: [registry],
 });
 
+let tracer = null;
+if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+  const { BasicTracerProvider, BatchSpanProcessor } = require("@opentelemetry/sdk-trace-base");
+  const { OTLPTraceExporter } = require("@opentelemetry/exporter-trace-otlp-http");
+  const { resourceFromAttributes } = require("@opentelemetry/resources");
+  const provider = new BasicTracerProvider({
+    resource: resourceFromAttributes({
+      "service.name": process.env.OTEL_SERVICE_NAME || "portfolio-api",
+      "deployment.environment.name": process.env.DEPLOY_ENV || "inconnu",
+    }),
+    spanProcessors: [
+      new BatchSpanProcessor(
+        new OTLPTraceExporter({ url: process.env.OTEL_EXPORTER_OTLP_ENDPOINT.replace(/\/$/, "") + "/v1/traces" }),
+        { scheduledDelayMillis: 2000 }
+      ),
+    ],
+  });
+  tracer = provider.getTracer("portfolio-api");
+}
+
 function observability(req, res, next) {
   const incoming = req.headers["x-request-id"];
   const id = typeof incoming === "string" && /^[\w-]{8,64}$/.test(incoming) ? incoming : randomUUID();
   req.id = id;
   res.setHeader("X-Request-Id", id);
+  const span = tracer
+    ? tracer.startSpan(req.method + " " + req.path, {
+        kind: SpanKind.SERVER,
+        attributes: { "http.request.method": req.method, "url.path": req.path, "request.id": id },
+      })
+    : null;
+  const traceId = span ? span.spanContext().traceId : undefined;
+  if (traceId) res.setHeader("X-Trace-Id", traceId);
   const start = process.hrtime.bigint();
   res.on("finish", () => {
     const sec = Number(process.hrtime.bigint() - start) / 1e9;
@@ -31,10 +61,17 @@ function observability(req, res, next) {
     const labels = { method: req.method, route, status: String(res.statusCode) };
     httpTotal.inc(labels);
     httpDuration.observe(labels, sec);
+    if (span) {
+      span.updateName(req.method + " " + route);
+      span.setAttribute("http.route", route);
+      span.setAttribute("http.response.status_code", res.statusCode);
+      if (res.statusCode >= 500) span.setStatus({ code: SpanStatusCode.ERROR });
+      span.end();
+    }
     if (req.path !== "/metrics" && process.env.NODE_ENV !== "test") {
       console.log(JSON.stringify({
         ts: new Date().toISOString(), level: "info", msg: "http_request",
-        requestId: id, method: req.method, route, status: res.statusCode,
+        requestId: id, traceId, method: req.method, route, status: res.statusCode,
         durationMs: Math.round(sec * 1000),
       }));
     }
