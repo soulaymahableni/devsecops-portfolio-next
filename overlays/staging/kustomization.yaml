@@ -1,0 +1,29 @@
+# environnement staging : 1 replica(s) ; images Harbor epinglees par empreinte (meme image signee partout)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: portfolio-staging
+resources:
+  - ../../base
+replicas:
+  - name: frontend
+    count: 1
+  - name: api
+    count: 1
+images:
+  - name: devsecops-portfolio
+    newName: 192.168.190.141:8085/portfolio/devsecops-portfolio
+    digest: sha256:c98ad2554e11b8685db982888d8746292c52e1216082252b1df6d05425f95702
+  - name: devsecops-api
+    newName: 192.168.190.141:8085/portfolio/devsecops-api
+    digest: sha256:d4159e72a3ba7ddb6ff733276af714c43aef4fc35f084520920116ee98ec3db3
+patches:
+  - target:
+      kind: ConfigMap
+      name: portfolio-config
+    patch: |-
+      - op: replace
+        path: /data/API_URL
+        value: http://api.portfolio-staging.svc.cluster.local:4000
+      - op: replace
+        path: /data/CORS_ORIGIN
+        value: https://staging.portfolio.local

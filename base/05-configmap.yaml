@@ -1,0 +1,15 @@
+# Q147 : configuration NON sensible du frontend et de l'API
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: portfolio-config
+data:
+  # frontend
+  API_URL: http://api:4000
+  # API
+  PORT: "4000"
+  CORS_ORIGIN: https://portfolio.local
+  # base de données (hors mot de passe)
+  POSTGRES_HOST: postgres
+  POSTGRES_USER: portfolio
+  POSTGRES_DB: portfolio
