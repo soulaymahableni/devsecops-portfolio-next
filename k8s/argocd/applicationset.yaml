@@ -1,0 +1,34 @@
+# Q215 : un ApplicationSet genere les trois applications (dev, staging, prod)
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: portfolio
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - env: dev
+          - env: staging
+          - env: prod
+  template:
+    metadata:
+      name: 'portfolio-{{env}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/soulaymahableni/devsecops-portfolio-next.git
+        targetRevision: gitops
+        path: 'overlays/{{env}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: 'portfolio-{{env}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+        managedNamespaceMetadata:
+          labels:
+            verify-images: enabled
