@@ -2376,6 +2376,483 @@ Ces captures n'ont pas pu être prises ou n'existent pas : elles sont signalées
 
 ---
 
+# Activité 8 : Helm, Kustomize, Harbor et GitOps (sections 36 à 46, Q190 à Q242)
+
+Cette activité industrialise le déploiement du portfolio : paquets **Helm** et surcouches **Kustomize**, images publiées dans un registre privé **Harbor** et contrôlées avant déploiement, puis GitOps avec Argo CD et Jenkins, et supervision avec Prometheus et Grafana. **Cette première partie couvre les sections 36 à 42 et 45** ; les sections 43, 44 et 46 (traces, journaux, tests ZAP et k6) suivent dans une seconde pull request. Tout tourne sur le même cluster K3s que l'activité 7 (VM `automatisation`, `192.168.190.141`).
+
+```mermaid
+flowchart LR
+  D[docker push] --> H[(Harbor<br/>projet portfolio)]
+  C[cosign sign<br/>clé privée] -->|signature| H
+  H -->|imagePullSecret robot<br/>lecture seule| K[K3s]
+  K -->|admission| V{Kyverno<br/>verifyImages}
+  V -->|signature valide| OK[Pod créé]
+  V -->|signature absente| KO[Refusé]
+```
+
+---
+
+# Section 36 : Helm (Q190 à Q195)
+
+## Q190 : installer Helm
+Helm 3.22.1 était déjà installé sur la VM (`helm version`). Il sert à empaqueter le portfolio en un **chart** paramétrable.
+
+## Q191 : le chart du frontend et de l'API
+Le chart est dans `helm/portfolio/` (créé avec `helm create`, puis nettoyé de ses exemples) :
+
+```
+helm/portfolio/
+├── Chart.yaml
+├── values.yaml
+└── templates/
+    ├── serviceaccount.yaml
+    ├── configmap.yaml
+    ├── frontend.yaml      (Deployment + Service)
+    ├── api.yaml           (Deployment + Service)
+    ├── postgres.yaml      (PVC + Deployment + Service, optionnel)
+    └── ingress.yaml
+```
+
+Choix de conception :
+- Le chart est installé dans un **namespace séparé** (`portfolio-helm`, hôte `helm.portfolio.local`), car Helm refuse de gérer des objets créés par `kubectl apply` (`frontend`, `api` existent déjà dans `portfolio`). Le déploiement de l'activité 7 reste intact.
+- PostgreSQL est dans le chart mais **optionnel** (`postgres.enabled`), pour que l'API démarre sans dépendre d'un autre namespace.
+- Le **mot de passe de la base n'est jamais dans le chart ni dans Git** : le secret `portfolio-secret` est copié à la main dans le namespace avec `kubectl`, sans être affiché.
+- Les `securityContext` de l'activité 7 sont conservés (non-root, `drop ALL`, `seccompProfile`).
+
+## Q192 : `values.yaml`
+Valeurs configurables : image et tag du frontend et de l'API, nombre de réplicas, ressources (`requests` et `limits`), configuration (`API_URL`, `CORS_ORIGIN`, base de données), nom du secret, Postgres et Ingress (classe, hôte).
+
+```yaml
+frontend:
+  image: {repository: devsecops-portfolio, tag: "1.0", pullPolicy: Never}
+  replicas: 1
+api:
+  image: {repository: devsecops-api, tag: "1.0", pullPolicy: Never}
+  replicas: 1
+ingress:
+  enabled: true
+  className: traefik
+  host: helm.portfolio.local
+```
+
+## Q193 : `helm install` et `helm upgrade`
+```bash
+helm lint helm/portfolio
+helm install portfolio helm/portfolio -n portfolio-helm
+helm upgrade portfolio helm/portfolio -n portfolio-helm --set frontend.replicas=2 --set api.replicas=2
+```
+![helm lint et structure du chart](docs/captures/activite8/helm-lint-structure.png)
+![Installation : pods et release](docs/captures/activite8/helm-install-pods.png)
+
+`helm lint` répond `1 chart(s) linted, 0 chart(s) failed` (seul message : une icône est recommandée dans `Chart.yaml`).
+
+*Difficulté :* après la première installation, PostgreSQL redémarrait en boucle et l'API échouait (`P1001: Can't reach database server`). Mon template avait **oublié la variable `PGDATA`** présente dans `k8s/10-postgres.yaml` : sans elle, Postgres initialise la base à la racine du volume, qui contient `lost+found`. Le correctif (révision 2) a été appliqué par `helm upgrade`, ce qui a aussi servi de premier essai de mise à jour.
+
+## Q194 : `helm rollback`
+```bash
+helm rollback portfolio 2 -n portfolio-helm
+helm history portfolio -n portfolio-helm
+```
+
+| Révision | État | Description |
+|---|---|---|
+| 1 | superseded | Install complete |
+| 2 | superseded | Upgrade complete (ajout de `PGDATA`) |
+| 3 | superseded | Upgrade complete (2 réplicas frontend et API) |
+| 4 | deployed | Rollback to 2 |
+
+Le retour à la révision 2 a ramené l'API à un seul réplica (un pod passe en `Terminating`).
+
+![helm history et rollback](docs/captures/activite8/helm-rollback-history.png)
+
+## Q195 : ce que contient le dépôt
+`helm lint`, la structure du chart, `kubectl get pods`, `helm history` : captures ci-dessus. Les namespaces de démonstration ont été supprimés ensuite (`helm uninstall`) pour libérer la RAM.
+
+---
+
+# Section 37 : Kustomize (Q196 à Q200)
+
+## Q196 : la base
+`kustomize/base/` contient les manifests communs, repris de `k8s/` **sans namespace en dur** : ConfigMap, PostgreSQL, Deployments frontend et API, Services, ServiceAccount. Le Service du frontend est en `ClusterIP` (au lieu de `NodePort 30080`) pour que plusieurs environnements ne se disputent pas le même port.
+
+## Q197 et Q198 : les trois environnements
+`kustomize/overlays/dev|staging|prod` : chacun fixe son namespace, son nombre de réplicas et corrige la ConfigMap avec un `patch` JSON.
+
+| Environnement | Namespace | Frontend | API | `API_URL` | `CORS_ORIGIN` |
+|---|---|---|---|---|---|
+| dev | `portfolio-dev` | 1 | 1 | `http://api.portfolio-dev.svc.cluster.local:4000` | `https://dev.portfolio.local` |
+| staging | `portfolio-staging` | 2 | 2 | `http://api.portfolio-staging.svc.cluster.local:4000` | `https://staging.portfolio.local` |
+| prod | `portfolio-prod` | 3 | 3 | `http://api.portfolio-prod.svc.cluster.local:4000` | `https://prod.portfolio.local` |
+
+```bash
+kubectl kustomize kustomize/overlays/prod     # génère le YAML sans rien déployer
+```
+![Structure et build des trois overlays](docs/captures/activite8/kustomize-structure-build.png)
+
+## Q199 : déployer
+```bash
+kubectl apply -k kustomize/overlays/dev
+kubectl apply -k kustomize/overlays/staging
+```
+![DEV déployé](docs/captures/activite8/kustomize-apply-dev.png)
+![STAGING : 2 frontends, 2 API, 1 Postgres](docs/captures/activite8/kustomize-staging-pods.png)
+![Configuration différente par environnement](docs/captures/activite8/kustomize-config-par-env.png)
+
+**PROD a été généré et comparé, mais pas déployé** : trois réplicas de chaque composant en plus de DEV et STAGING dépassent la RAM de la VM (5,3 Go). Les deux autres environnements ont été supprimés après les captures.
+
+## Q200 : Helm ou Kustomize ?
+
+| Critère | Helm | Kustomize |
+|---|---|---|
+| Principe | **gabarits** (Go templates) + `values.yaml` | **YAML pur** + patchs par environnement |
+| Lisibilité | demande de connaître la syntaxe des gabarits | on lit directement du Kubernetes |
+| Gestion des versions | historique de releases, `rollback` intégré | pas d'historique (c'est Git qui sert d'historique) |
+| Paramétrage | très souple (`--set`, conditions, boucles) | limité aux patchs et aux générateurs |
+| Distribution | charts publiables et réutilisables | surcouches locales à un dépôt |
+| Piège rencontré ici | oubli de `PGDATA` dans le gabarit | rien à recopier, mais pas de retour arrière |
+
+Dans ce projet, **Kustomize convient pour les différences entre environnements** (peu de valeurs à changer), et **Helm pour packager l'application** avec un historique et un retour arrière.
+
+---
+
+# Section 38 : images Harbor et contrôle avant déploiement (Q201 à Q204)
+
+## Q201 : utiliser les images de Harbor
+Harbor 2.14.6 tourne avec `docker compose` dans `~/harbor-install/harbor`, en HTTP sur `192.168.190.141:8085`. Un **projet privé `portfolio`** reçoit les deux images (`devsecops-portfolio` et `devsecops-api`, tag `1.0`), envoyées par `automation/harbor-setup.sh`.
+
+K3s accepte ce registre HTTP grâce à `/etc/rancher/k3s/registries.yaml` :
+
+```yaml
+mirrors:
+  "192.168.190.141:8085":
+    endpoint:
+      - "http://192.168.190.141:8085"
+```
+
+Les Deployments `k8s/20-frontend-deployment.yaml` et `k8s/30-api-deployment.yaml` utilisent maintenant `192.168.190.141:8085/portfolio/...`, avec `imagePullPolicy: IfNotPresent` et `imagePullSecrets: harbor-pull`.
+
+![Les Deployments passent aux images Harbor, rollout réussi](docs/captures/activite8/portfolio-images-harbor.png)
+![Pods et commit : le portfolio répond `HTTP 200` avec les images Harbor](docs/captures/activite8/portfolio-images-harbor-pods.png)
+
+*Les captures de l'interface Harbor et du résultat du script n'ont pas été prises ; les deux captures ci-dessus montrent le résultat côté cluster (images en `192.168.190.141:8085/portfolio/...`).*
+
+## Q202 : compte robot en lecture seule
+Le compte robot `robot$portfolio+k3s-pull` n'a que le droit **`pull`** sur le projet `portfolio`. Son secret est enregistré **directement dans Kubernetes** (`kubectl create secret docker-registry harbor-pull`), sans jamais être affiché ni écrit dans Git. Contrôle : une lecture avec le robot répond `HTTP 200`.
+
+
+## Q203 : signer les images et vérifier avant le déploiement
+**Signature.** Cosign v3.1.4 signe chaque image **par son empreinte** (`@sha256:...`) avec une paire de clés dédiée (`~/cosign-keys/harbor/`). La clé **publique** `cosign-harbor.pub` est dans le dépôt ; la clé privée n'y est jamais.
+
+```bash
+cosign sign --yes --key ~/cosign-keys/harbor/cosign.key \
+  --use-signing-config=false --new-bundle-format=false --tlog-upload=false \
+  localhost:8085/portfolio/devsecops-api@sha256:d4159e72...
+cosign verify --key cosign-harbor.pub --new-bundle-format=false --insecure-ignore-tlog=true ...
+```
+Les deux vérifications répondent `The signatures were verified against the specified public key`.
+
+*La vérification de la signature est aussi visible sur la capture `gitops-api-version.png` (section 39) et `gitops-promotion.png` (section 40).*
+
+**Contrôle à l'admission.** Kyverno 1.19.2 (chart 3.9.2, version allégée : un seul contrôleur d'admission) applique la politique `ImageValidatingPolicy` `verifier-images-harbor` (`k8s/policies/kyverno-verify-images.yaml`) :
+- elle vérifie la signature avec la clé publique, pour toute image de `192.168.190.141:8085/portfolio/*` ;
+- elle lit Harbor avec le secret `harbor-pull` ;
+- elle ne s'applique qu'aux namespaces étiquetés `verify-images=enabled` (`verif-signatures` et `portfolio`, puis `portfolio-dev`, `portfolio-staging` et `portfolio-prod` en section 40), pour ne rien bloquer d'autre.
+
+
+## Q204 : une image non signée est refusée
+Une image sans signature (`postgres:16-alpine` republiée sous `non-signe:1.0`) est refusée ; l'image signée est acceptée (résultat complet dans `docs/kyverno-verifyimages-test.txt`).
+
+```
+Test 2 : pod avec l'image NON SIGNEE
+Error from server: error when creating "STDIN": admission webhook
+"ivpol.validate.kyverno.svc-fail-finegrained-verifier-images-harbor" denied the request:
+Policy verifier-images-harbor failed: Image refusee : signature Cosign absente ou invalide
+```
+*Les captures Kyverno n'ont pas été prises : la preuve est le texte de refus ci-dessus et le fichier `docs/kyverno-verifyimages-test.txt`.*
+
+Le redémarrage de l'API dans le namespace `portfolio` (maintenant protégé par la même politique) s'est aussi déroulé normalement, ce qui confirme que la signature est bien validée sur le vrai déploiement.
+
+**Choix à connaître.** La politique ignore la **transparence publique** (`ctlog.insecureIgnoreTlog` et `insecureIgnoreSCT`) : les signatures n'ont pas été inscrites dans le journal public Rekor (`--tlog-upload=false`). La signature est bien vérifiée avec la clé publique, mais sans preuve d'horodatage publique, ce qui est acceptable pour un registre privé de laboratoire.
+
+### Difficultés rencontrées (section 38)
+
+| Problème | Cause | Solution |
+|---|---|---|
+| Harbor arrêté après redémarrage ; `docker compose up` répond `permission denied` | `common/config/` appartient à `root` | `sudo docker compose up -d` |
+| `harbor-core` en boucle (`i/o timeout` vers Redis) | `ufw` (`deny routed`) filtre le trafic entre conteneurs, car `br_netfilter` est actif | `ufw route allow` et `ufw allow in on` limités au pont Harbor |
+| L'hôte n'atteint plus Harbor (`HTTP 000`) alors que les conteneurs sont `healthy` | le pont Docker avait perdu son adresse IPv4 (et sa route) | `ip addr add 172.19.0.1/16 dev br-...` (correction temporaire, à refaire après un redémarrage) |
+| Mot de passe admin de Harbor perdu | changé depuis l'interface | sel et mot de passe de `admin` vidés dans la base, puis redémarrage de `core` (retour au mot de passe initial) |
+| Mot de passe de l'ancienne clé Cosign perdu (`decryption failed`) | clé créée dans une activité précédente | nouvelle paire de clés dédiée à Harbor ; l'ancienne reste intacte |
+| `--tlog-upload=false is not supported with --signing-config` | options par défaut de Cosign v3 | ajout de `--use-signing-config=false` et `--new-bundle-format=false` |
+| Kyverno : `no matching signatures: offline verification failed` | signature sans inscription Rekor | `ctlog.insecureIgnoreTlog: true` dans la politique |
+| Pods `Evicted`, webhooks Kyverno et cert-manager sans point de terminaison | disque à 91 %, seuil d'éviction du kubelet à 15 % de libre | nettoyage Docker, puis seuil abaissé à 5 % dans `/etc/rancher/k3s/config.yaml` (réglage de laboratoire) |
+| Pods `ContainerCreating`, `PVC` en `Pending` | images supprimées par `crictl rmi --prune`, provisionneur de volumes bloqué | réimport des images, redémarrage de `local-path-provisioner` |
+| Téléchargement lent des images Kyverno | `reg.kyverno.io` lent depuis la VM | pré-téléchargement avec Docker puis import dans K3s |
+
+---
+
+# Section 39 : Argo CD (Q205 à Q210)
+
+```mermaid
+flowchart LR
+  J[Jenkins<br/>build, scan, SBOM, signature] --> H[(Harbor<br/>image signée)]
+  J -->|met à jour le digest| G[branche gitops<br/>overlays dev, staging, prod]
+  G -->|surveillée| A[Argo CD]
+  A -->|synchronise| K[K3s<br/>portfolio-dev, staging, prod]
+  K -->|admission| V{Kyverno<br/>signature}
+  H -->|pull| K
+```
+
+## Installation
+Argo CD est installé avec le chart Helm `argo/argo-cd` **10.18.0** (Argo CD **v3.6.1**) dans le namespace `argocd`, par `automation/argocd-install.sh`. Pour économiser la RAM, Dex et les notifications sont désactivés (`--set dex.enabled=false --set notifications.enabled=false`). L'interface est exposée en `NodePort` : HTTPS sur **30443** (certificat auto-signé, d'où l'avertissement du navigateur) et HTTP sur **30081** (le port 30080 est déjà pris par le frontend). Le mot de passe initial de `admin` se lit dans le secret `argocd-initial-admin-secret` ; il n'est écrit nulle part dans le dépôt.
+
+![Pods Argo CD](docs/captures/activite8/argocd-pods.png)
+![Interface Argo CD, avant la première application](docs/captures/activite8/argocd-interface.png)
+
+La capture des pods montre une erreur de téléchargement du chart (`lookup github.com ... i/o timeout`) : le DNS de la VM est instable. Le script a été rendu **tolérant** (nouvelles tentatives sur `curl` et sur `helm pull`), et les pods sont ensuite passés à `Running`.
+
+## La source de vérité : une branche `gitops` dans le même dépôt
+Au lieu d'un second dépôt, Argo CD lit une **branche orpheline `gitops`** du dépôt `devsecops-portfolio-next` (créée par `automation/gitops-init.sh`). Elle ne contient que les manifests de déploiement :
+
+```
+gitops (branche orpheline)
+├── README.md
+├── base/                      (manifests communs, images référencées par digest)
+└── overlays/
+    ├── dev/kustomization.yaml
+    ├── staging/kustomization.yaml
+    └── prod/kustomization.yaml
+```
+
+Les images sont **épinglées par digest** (`images:` de Kustomize avec `digest: sha256:...`) et non par un tag modifiable : ce qui est déployé est exactement ce qui a été signé.
+
+## Application `portfolio-dev` (Q205 à Q207)
+`k8s/argocd/application-dev.yaml` déclare une `Application` qui suit `overlays/dev` de la branche `gitops`, avec **synchronisation automatique, `prune` et `selfHeal`**. Elle passe `Synced` et `Healthy` :
+
+![Application portfolio-dev synchronisée](docs/captures/activite8/argocd-dev-synced.png)
+![Vue en ligne de commande : pods et images par digest](docs/captures/activite8/argocd-dev-synced-cli.png)
+
+## Changer l'état par Git, pas par `kubectl` (Q208)
+Un commit sur la branche `gitops` (`count: 1` devient `count: 2` pour les deux composants) suffit : Argo CD détecte le changement et ajoute un pod frontend et un pod API.
+
+![Commit : dev passe à 2 réplicas](docs/captures/activite8/argocd-replicas-avant.png)
+![Résultat : 2 pods API et 2 pods frontend](docs/captures/activite8/argocd-replicas-apres.png)
+
+## Auto-réparation (Q209)
+Le frontend est mis à 5 réplicas **à la main** avec `kubectl scale`. Argo CD détecte la dérive par rapport à Git et revient à 2 en environ 40 secondes :
+
+```
+--- AVANT sabotage ---                          frontend   2/2
+--- juste apres : 5 demandes manuelles ---      frontend   2/5
+--- 40 s plus tard : Argo CD a repare ---       frontend   2/2
+```
+![Auto-réparation](docs/captures/activite8/argocd-self-heal.png)
+
+## Changer de version de l'API par Git (Q210)
+`automation/gitops-api-1-1.sh` construit l'API 1.1, la publie dans Harbor, la **signe avec Cosign**, vérifie la signature, puis remplace le digest dans `overlays/dev`. Argo CD déploie la nouvelle empreinte (`d4159e72...` devient `983ad336...`).
+
+![API 1.1 déployée par Git](docs/captures/activite8/gitops-api-version.png)
+
+*Note :* l'image 1.1 est construite **par couche** à partir de l'image 1.0 (`FROM` 1.0 plus une étiquette), pour ne pas dépendre du réseau instable de la VM (téléchargement de paquets). Le contenu de l'application est donc identique à la 1.0 ; seul le digest change, ce qui suffit à démontrer le mécanisme.
+
+---
+
+# Section 40 : environnements GitOps (Q211 à Q215)
+
+## Trois environnements pour une seule définition
+Une `ApplicationSet` (`k8s/argocd/applicationset.yaml`, générateur par liste) crée automatiquement `portfolio-dev`, `portfolio-staging` et `portfolio-prod`, chacune pointant vers son overlay de la branche `gitops`. Elle a remplacé l'application créée à la main (`portfolio-dev`). Les namespaces reçoivent l'étiquette `verify-images=enabled`, donc **la politique Kyverno de signature s'applique aussi à ces trois environnements**.
+
+| Environnement | Namespace | Frontend | API | Source |
+|---|---|---|---|---|
+| dev | `portfolio-dev` | 1 | 1 | `overlays/dev` |
+| staging | `portfolio-staging` | 1 | 1 | `overlays/staging` |
+| prod | `portfolio-prod` | 2 | 2 | `overlays/prod` |
+
+Les réplicas sont plus bas que dans la section 37 (staging 2, prod 3) : trois environnements complets, plus Argo CD, Harbor et Kyverno, dépassent la RAM de la VM (5,3 Go, environ 1,6 Go disponibles).
+
+![ApplicationSet : trois applications dans l'interface](docs/captures/activite8/argocd-applicationset.png)
+![Création de l'ApplicationSet et pods des trois environnements](docs/captures/activite8/argocd-3-apps-cli.png)
+
+## Promotion sans reconstruction
+`automation/gitops-promote.sh` reprend le digest validé en dev et le recopie dans staging puis dans prod, par **un commit chacun** :
+
+```
+- digest: sha256:d4159e72...        (ancienne API)
++ digest: sha256:983ad336...        (API validée en dev)
+```
+
+L'image n'est **jamais reconstruite** : la même image, signée une seule fois, est exécutée partout. Le tableau relevé sur le cluster le prouve :
+
+| Environnement | API | Frontend |
+|---|---|---|
+| dev | `sha256:983ad336e2dfe01a` | `sha256:c98ad2554e11b868` |
+| staging | `sha256:983ad336e2dfe01a` | `sha256:c98ad2554e11b868` |
+| prod | `sha256:983ad336e2dfe01a` | `sha256:c98ad2554e11b868` |
+
+La signature de l'API promue est vérifiée à la fin du script (`The signatures were verified against the specified public key`), et les trois applications sont `Synced` et `Healthy`.
+
+![Promotion dev, staging, prod et empreintes identiques](docs/captures/activite8/gitops-promotion.png)
+
+**Retour arrière.** Annuler une promotion revient à un `git revert` du commit correspondant sur la branche `gitops` ; Argo CD redéploie alors l'ancienne image signée. Cette opération est décrite dans le runbook (section 45) mais n'a pas été rejouée ici.
+
+---
+
+# Section 41 : CI/CD GitOps avec Jenkins (Q216 à Q218)
+
+## Le pipeline
+Le `Jenkinsfile` déjà présent dans le dépôt enchaîne : tests de l'API et du frontend, Gitleaks, Semgrep, `npm audit`, Dependency-Check, construction des images, Trivy, **publication dans Harbor**, **SBOM Syft** et **signature Cosign**. Cette activité ajoute l'étape manquante, qui fait entrer le **GitOps** : à la fin du pipeline, Jenkins ne déploie rien lui-même, il **met à jour Git**.
+
+```groovy
+stage('Mise a jour GitOps') {
+  steps {
+    withCredentials([string(credentialsId: 'gitops-token', variable: 'GITOPS_TOKEN')]) {
+      sh '''
+        for img in api portfolio; do
+          DIGEST=$(grep -o 'digest: sha256:[a-f0-9]*' push-$img.log | tail -1 | awk '{print $2}')
+          test -n "$DIGEST"
+          DRY_RUN=0 bash automation/gitops-update.sh dev $img $DIGEST
+        done
+      '''
+    }
+  }
+}
+```
+
+`automation/gitops-update.sh <env> <api|portfolio> <sha256:...>` remplace le digest dans l'overlay demandé de la branche `gitops`, puis commit et push. Par défaut (`DRY_RUN=1`) il affiche seulement le changement et l'annule. Seul **dev** est mis à jour automatiquement : staging et prod passent par la promotion de la section 40, avec relecture.
+
+![Étape Jenkins ajoutée](docs/captures/activite8/jenkinsfile-etape-gitops.png)
+![Test à blanc : un seul digest change, rien n'est commité](docs/captures/activite8/gitops-update-dry-run.png)
+
+## Ce qui a été fait, et ce qui ne l'a pas été
+- Le **script** a été testé à blanc, puis exécuté pour de vrai (section 42 : mises à jour de dev, staging et prod, suivies par Argo CD).
+- Le pipeline Jenkins **n'a pas été rejoué en entier** : Dependency-Check, Semgrep et Trivy dépassent la RAM disponible à côté de K3s, d'Argo CD et de Harbor. La chaîne a été reproduite à la main : construction (`automation/api-layer.sh`), publication, signature Cosign, puis `gitops-update.sh`.
+- L'identifiant Jenkins `gitops-token` (jeton GitHub limité au dépôt) est à créer **à la main** dans Jenkins ; il n'est ni dans Git ni dans ce document.
+- **Limite connue :** Jenkins publie dans le projet Harbor `devsecops`, alors que le cluster tire depuis le projet `portfolio`. Pour une exécution réelle, il faut un seul projet, ou un robot de lecture sur les deux.
+
+## Migrations de base de données (Q218)
+`k8s/gitops-hooks/migration-job.yaml` est un **Job** Argo CD (hook `Sync`, vague 1) qui lance `npx prisma migrate deploy`. Il construit `DATABASE_URL` comme l'API (ConfigMap plus secret, jamais en clair) et s'exécute **après** les ressources de la vague 0, dont PostgreSQL. Un hook `PreSync` aurait échoué sur un environnement vierge, faute de base. Le manifeste est validé (`kubectl apply --dry-run=client`) mais **pas déployé** : le `CMD` de l'image de l'API lance déjà `prisma migrate deploy` au démarrage. Avec plusieurs réplicas, la migration serait lancée plusieurs fois en parallèle ; la recommandation est de retirer la migration du `CMD` une fois le Job activé.
+
+---
+
+# Section 42 : supervision avec Prometheus et Grafana (Q219 à Q225)
+
+```mermaid
+flowchart LR
+  API[API pods<br/>GET /metrics] -->|scrape 15 s| P[Prometheus<br/>namespace monitoring]
+  P --> G[Grafana<br/>conteneur Docker, port 3030]
+  P --> R[règles SLO et alertes]
+```
+
+## Les métriques de l'API
+Le module `api/src/observability.js` (bibliothèque `prom-client`) expose `/metrics` :
+- `http_requests_total{method, route, status}` et `http_request_duration_seconds` (histogramme), plus les métriques du processus (mémoire, CPU, démarrage) ;
+- un **identifiant de requête** `X-Request-Id` (accepté s'il est valide, sinon généré) repris dans un **journal JSON** par requête, qui servira de fil conducteur entre métriques, journaux et traces.
+
+`/metrics` est en dehors de `/api`, donc l'Ingress ne l'expose pas à l'extérieur : seul Prometheus, dans le cluster, le lit.
+
+## Prometheus dans le cluster
+`k8s/monitoring/prometheus.yaml` déploie Prometheus (namespace `monitoring`, limite 400 Mo) qui **découvre seul les pods** de l'API : namespaces `portfolio*`, étiquette `app=api`, pod en `Running`, port 4000. Aucune modification des déploiements n'est nécessaire. L'image `prom/prometheus` déjà présente a été importée dans K3s sans téléchargement.
+
+## Grafana
+Grafana reste en conteneur Docker (son image pèse 2 Go : l'importer dans K3s doublerait l'espace utilisé), avec `--network host` sur le port **3030** (3001 est occupé par l'ancien portfolio du TP1). Sa configuration est versionnée dans `k8s/monitoring/grafana/` : source de données et tableau de bord **provisionnés par fichiers**. Le mot de passe administrateur est généré au hasard au lancement et rangé hors du dépôt.
+
+Le tableau de bord « API Portfolio : observabilité » contient six panneaux : cibles en ligne, requêtes par seconde par environnement, taux d'erreurs 5xx, latence p95 par route, mémoire par pod, ancienneté du processus.
+
+![Tableau de bord Grafana](docs/captures/activite8/grafana-dashboard-api.png)
+
+*À lire sur la capture :* les 4 cibles sont en ligne, le trafic de test (environ 7 à 8 requêtes par seconde) apparaît pour chaque environnement, et le panneau « Taux d'erreurs 5xx » affiche **« No data »** : l'API n'a renvoyé aucune erreur 5xx, donc le numérateur de la division est vide. Ce n'est pas un défaut de mesure.
+
+## Le scraping vu par Prometheus
+Avant que l'API 1.2 (avec `/metrics`) soit promue, seul dev répond :
+
+![Cibles Prometheus : 1 sur 5](docs/captures/activite8/prometheus-targets-avant.png)
+
+- `404 Not Found` (staging et prod) : l'API 1.0 existe mais n'a pas de `/metrics`.
+- `connection refused` (namespace `portfolio`) : ancien déploiement hors GitOps.
+
+L'API 1.2 est construite par `automation/api-layer.sh`, publiée dans Harbor, **signée** puis déployée **par Git** : `gitops-update.sh` pour dev, puis le même digest pour staging et prod. Résultat : **4 cibles sur 5 en ligne**, seul l'ancien namespace `portfolio` reste en échec (volontairement conservé pour la démonstration d'alerte de la section 45).
+
+![Cibles Prometheus : 4 sur 5](docs/captures/activite8/prometheus-targets-apres.png)
+
+## Suppression d'un pod (Q225)
+Le pod de l'API de dev est supprimé (`kubectl delete pod`). Kubernetes en recrée un, Prometheus le retrouve, et l'ancienneté du processus retombe à zéro :
+
+| | Pod | `up` | Ancienneté du processus |
+|---|---|---|---|
+| Avant (21:53:01) | `api-58bcbf746d-hwgnh` | 1 | 1092 s |
+| Après (21:54:03) | `api-58bcbf746d-m5g5h` (nouveau) | 1 | 43 s |
+
+Le panneau « Ancienneté du processus » de Grafana montre la même chute à zéro.
+
+### Difficultés rencontrées (sections 39 à 42)
+
+| Problème | Cause | Solution |
+|---|---|---|
+| Installation d'Argo CD : `lookup github.com ... i/o timeout`, `curl` en erreur 35 | DNS et réseau de la VM instables | script tolérant (`--retry`, `helm pull` en boucle) et un seul téléchargement à la fois |
+| Port `30080` déjà utilisé | pris par le frontend | Argo CD HTTP sur `30081` |
+| Application en `DeadlineExceeded` | le `git fetch` de tout le dépôt prend environ 7 minutes à 27 Ko/s | délais d'expiration du repo-server portés à 900 s |
+| `apk add` impossible (`DNS: transient error`) pendant `docker build` | miroir Alpine injoignable depuis la VM | images 1.1 et 1.2 construites par **couche** sur la 1.0 (`automation/api-layer.sh`) |
+| Première image 1.2 avec environ 300 paquets de test (`jest`, `babel`, `supertest`) | le script copiait tout `node_modules` de la VM, devDependencies comprises | restriction aux seuls paquets de **production** (`npm ls --omit=dev`), garde-fou sur le nombre de paquets ; image repoussée (+6 Mo seulement) |
+| Cibles Prometheus en `404` | API 1.0 sans `/metrics` | promotion de l'API 1.2 par Git |
+| Grafana inaccessible sur le port 3001 | l'ancien portfolio du TP1 (PM2) l'occupe | Grafana déplacé sur le port 3030 |
+| `cosign sign` sans effet | sortie redirigée, l'invite du mot de passe n'était pas visible | signature relancée seule, sans redirection |
+
+---
+
+# Section 45 : SLI, SLO, alertes et runbook (Q234 à Q237)
+
+## Indicateurs et objectifs
+
+| | Indicateur (SLI) | Objectif (SLO) |
+|---|---|---|
+| Disponibilité | part des requêtes qui **ne sont pas** des erreurs 5xx | **99 %** sur 30 jours (budget d'erreur : 1 %) |
+| Latence | p95 de `http_request_duration_seconds` | inférieur à **500 ms** |
+
+Les SLI sont calculés par des **règles d'enregistrement** Prometheus (`api:http_error_ratio:rate5m`, `...:rate1h`, `api:http_latency_p95:rate5m`).
+
+## Alertes
+Les règles sont dans `k8s/monitoring/rules/api-slo.yml`, **validées avec `promtool check rules`** (`SUCCESS: 6 rules found`), puis injectées dans la ConfigMap de Prometheus.
+
+| Alerte | Condition | Gravité |
+|---|---|---|
+| `ApiTargetDown` | `up{job="api"} == 0` pendant 1 min | warning |
+| `ApiErrorBudgetFastBurn` | taux d'erreurs 5xx supérieur à 14,4 % sur 5 min **et** sur 1 h, pendant 2 min | critical |
+| `ApiLatencyP95High` | p95 supérieur à 500 ms pendant 5 min | warning |
+
+Le seuil **14,4** est le *burn rate* classique : à ce rythme, le budget mensuel de 1 % serait consommé à raison de 2 % par heure (14,4 × 1 h ÷ 720 h). Les deux fenêtres (5 min et 1 h) évitent de déclencher sur un pic très court.
+
+Résultat relevé dans Prometheus, quelques minutes après le déploiement : l'ancien déploiement hors GitOps (`portfolio`, API 1.0 sans `/metrics`) déclenche bien l'alerte :
+
+```
+1 alerte(s)
+   ApiTargetDown portfolio api-7c87585bbd-v7525 firing
+```
+
+## Runbook
+La procédure à suivre est dans `docs/runbooks/api-indisponible.md` : symptôme et impact, diagnostic dans l'ordre (environnement, événements du pod, journaux avec le `requestId`, base de données, dernier changement sur la branche `gitops`), résolution (retour au digest précédent par `git revert`, suppression du pod, image non signée), escalade et après-incident. Chaque alerte contient une annotation `runbook` qui pointe vers ce fichier.
+
+**Limite assumée :** il n'y a pas d'Alertmanager (trop lourd pour la VM) : les alertes sont visibles dans l'interface de Prometheus et dans Grafana, mais aucun message n'est envoyé (courriel, Slack...).
+
+---
+
+# Limites et réglages de laboratoire (sections 36 à 45)
+
+- **RAM** : 5,3 Go au total. Les réplicas des environnements GitOps sont réduits (dev 1, staging 1, prod 2) et les composants lourds (Kyverno, Prometheus, Grafana, Harbor, Argo CD) sont allégés.
+- **Seuil d'éviction du kubelet abaissé à 5 %** dans `/etc/rancher/k3s/config.yaml`, car le disque est occupé à plus de 90 % : un réglage de laboratoire, à ne pas reproduire en production.
+- **Prometheus** conserve 6 heures de données dans un `emptyDir` : tout est perdu au redémarrage du pod. Les images `prom/prometheus` et `grafana/grafana` sont en `latest` (à épingler).
+- **Harbor** : ufw filtre le trafic entre conteneurs. Après un redémarrage de la VM, le pont Docker de Harbor peut perdre son adresse (`sudo ip addr add 172.19.0.1/16 dev br-...`).
+- **Signatures Cosign** sans journal de transparence (`--tlog-upload=false`) ; la politique Kyverno l'ignore. Acceptable pour un registre privé de laboratoire.
+- **K3s** : la version réelle du cluster est `v1.36.6+k3s1` (le README de l'activité 7 indique `v1.37.2`).
+
+<!-- SUITE-A8:DEBUT -->
+## Suite de l'activité 8 (prochaine pull request)
+- **Section 43** : traces OpenTelemetry, Tempo, identifiant de corrélation (le code de l'API est déjà prêt et désactivé par défaut tant qu'aucun collecteur n'est configuré).
+- **Section 44** : journaux avec Loki, puis navigation métriques, journaux, traces.
+- **Section 46** : OWASP ZAP dans le pipeline et test de charge k6 sur STAGING avant PROD.
+<!-- SUITE-A8:FIN -->
+
+---
+
 # Avancement général
 
 | Partie | Questions | État |
@@ -2400,3 +2877,14 @@ Ces captures n'ont pas pu être prises ou n'existent pas : elles sont signalées
 | Section 33 : Kyverno et Gatekeeper | 171-177 | ✅ fait |
 | Section 34 : Sealed Secrets, Vault, ESO | 178-184 | ✅ fait |
 | Section 35 : Trivy Operator, Kubescape, Falco | 185-189 | ✅ fait |
+| Section 36 : Helm | 190-195 | ✅ fait |
+| Section 37 : Kustomize | 196-200 | ✅ fait (PROD généré, non déployé : RAM) |
+| Section 38 : Harbor et contrôle avant déploiement | 201-204 | ✅ fait |
+| Section 39 : Argo CD | 205-210 | ✅ fait |
+| Section 40 : environnements GitOps | 211-215 | ✅ fait |
+| Section 41 : CI/CD GitOps avec Jenkins | 216-218 | ✅ fait (pipeline non rejoué en entier) |
+| Section 42 : Prometheus et Grafana | 219-225 | ✅ fait |
+| Section 43 : OpenTelemetry et traces | 226-230 | ⏳ en cours |
+| Section 44 : Loki et corrélation métriques, journaux, traces | 231-233 | ⏳ en cours |
+| Section 45 : SLI, SLO, alertes et runbook | 234-237 | ✅ fait (sans Alertmanager) |
+| Section 46 : OWASP ZAP et k6 | 238-242 | ⏳ à faire |
