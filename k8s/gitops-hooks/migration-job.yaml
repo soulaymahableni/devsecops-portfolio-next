@@ -15,9 +15,11 @@ spec:
   template:
     spec:
       restartPolicy: Never
+      securityContext: {runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, seccompProfile: {type: RuntimeDefault}}
       imagePullSecrets: [{name: harbor-pull}]
       containers:
         - name: migrate
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
           image: 192.168.190.141:8085/portfolio/devsecops-api:1.0
           command: ["npx", "prisma", "migrate", "deploy"]
           env:
