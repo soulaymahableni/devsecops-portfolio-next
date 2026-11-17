@@ -29,6 +29,7 @@ data:
     global:
       scrape_interval: 15s
       evaluation_interval: 15s
+    rule_files: [/etc/prometheus/rules.yml]
     scrape_configs:
       - job_name: prometheus
         static_configs: [{targets: ['localhost:9090']}]
@@ -42,6 +43,39 @@ data:
           - {source_labels: [__meta_kubernetes_pod_ip], regex: '(.+)', replacement: '$1:4000', target_label: __address__}
           - {source_labels: [__meta_kubernetes_namespace], target_label: namespace}
           - {source_labels: [__meta_kubernetes_pod_name], target_label: pod}
+  rules.yml: |
+    groups:
+      - name: api-sli
+        rules:
+          - record: api:http_error_ratio:rate5m
+            expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))
+          - record: api:http_error_ratio:rate1h
+            expr: sum(rate(http_requests_total{status=~"5.."}[1h])) / sum(rate(http_requests_total[1h]))
+          - record: api:http_latency_p95:rate5m
+            expr: histogram_quantile(0.95, sum by (le)(rate(http_request_duration_seconds_bucket[5m])))
+      - name: api-alertes
+        rules:
+          - alert: ApiTargetDown
+            expr: up{job="api"} == 0
+            for: 1m
+            labels: {severity: warning}
+            annotations:
+              summary: "API injoignable : {{ $labels.namespace }} / {{ $labels.pod }}"
+              runbook: "docs/runbooks/api-indisponible.md"
+          - alert: ApiErrorBudgetFastBurn
+            expr: api:http_error_ratio:rate5m > (14.4 * 0.01) and api:http_error_ratio:rate1h > (14.4 * 0.01)
+            for: 2m
+            labels: {severity: critical}
+            annotations:
+              summary: "Le budget d'erreur du SLO 99 % brule 14,4 fois trop vite"
+              runbook: "docs/runbooks/api-indisponible.md"
+          - alert: ApiLatencyP95High
+            expr: api:http_latency_p95:rate5m > 0.5
+            for: 5m
+            labels: {severity: warning}
+            annotations:
+              summary: "Latence p95 de l'API superieure a 500 ms"
+              runbook: "docs/runbooks/api-indisponible.md"
 ---
 apiVersion: apps/v1
 kind: Deployment
