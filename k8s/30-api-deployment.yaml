@@ -18,6 +18,8 @@ spec:
         app: api
     spec:
       serviceAccountName: portfolio-app
+      imagePullSecrets:
+        - name: harbor-pull
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -26,8 +28,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: api
-          image: devsecops-api:1.0
-          imagePullPolicy: Never
+          image: 192.168.190.141:8085/portfolio/devsecops-api:1.0
+          imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
