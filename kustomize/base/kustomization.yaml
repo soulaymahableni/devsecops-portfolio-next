@@ -1,0 +1,11 @@
+# Q196 : base commune aux trois environnements
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - serviceaccount.yaml
+  - 05-configmap.yaml
+  - 10-postgres.yaml
+  - 20-frontend-deployment.yaml
+  - 30-api-deployment.yaml
+  - 40-frontend-service.yaml
+  - 41-api-service.yaml
