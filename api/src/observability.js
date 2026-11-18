@@ -30,6 +30,9 @@ const httpDuration = new client.Histogram({
   registers: [registry],
 });
 
+// Sondes et scraping : pas de trace
+const SANS_TRACE = new Set(["/metrics", "/api/health"]);
+
 let tracer = null;
 if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
   const { BasicTracerProvider, BatchSpanProcessor } = require("@opentelemetry/sdk-trace-base");
@@ -55,7 +58,7 @@ function observability(req, res, next) {
   const id = typeof incoming === "string" && /^[\w-]{8,64}$/.test(incoming) ? incoming : randomUUID();
   req.id = id;
   res.setHeader("X-Request-Id", id);
-  const span = tracer
+  const span = tracer && SANS_TRACE.has(req.path) === false
     ? tracer.startSpan(
         req.method + " " + req.path,
         {

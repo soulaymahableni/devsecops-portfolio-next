@@ -5,7 +5,7 @@ const rateLimit = require("express-rate-limit");
 const { z } = require("zod");
 const prisma = require("./db");
 const { observability, metricsHandler, withSpan } = require("./observability");
-const { publishContact } = require("./aws");
+const { publishContact, isEnabled } = require("./aws");
 const { profile, projects, skills } = require("./data/portfolio");
 
 const app = express(); // nosemgrep: javascript.express.security.audit.express-check-csurf-middleware-usage.express-check-csurf-middleware-usage -- API JSON stateless, sans cookie ni session : CSRF non applicable
@@ -77,12 +77,11 @@ app.post("/api/contact", contactLimiter, async (req, res, next) => {
     // Q114 : archive S3 + notification SQS (Floci). Un échec ne bloque pas la réponse.
     let notification = "désactivée";
     try {
-      const sent = await withSpan(
-        req,
-        "floci S3 PutObject + SQS SendMessage",
-        { "peer.service": "floci", "rpc.system": "aws-api" },
-        () => publishContact({ id: saved.id, ...result.data })
-      );
+      const publier = () => publishContact({ id: saved.id, ...result.data });
+      // le span Floci n'existe que si Floci est reellement appele
+      const sent = isEnabled()
+        ? await withSpan(req, "floci S3 PutObject + SQS SendMessage", { "peer.service": "floci", "rpc.system": "aws-api" }, publier)
+        : await publier();
       if (sent.enabled) notification = "envoyée";
     } catch (awsErr) {
       notification = "échec";
