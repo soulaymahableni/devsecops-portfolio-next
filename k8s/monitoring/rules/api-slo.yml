@@ -15,18 +15,25 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "API injoignable : {{ $labels.namespace }} / {{ $labels.pod }}"
-          runbook: "docs/runbooks/api-indisponible.md"
+          runbook: "https://github.com/soulaymahableni/devsecops-portfolio-next/blob/main/docs/runbooks/api-indisponible.md"
       - alert: ApiErrorBudgetFastBurn
         expr: api:http_error_ratio:rate5m > (14.4 * 0.01) and api:http_error_ratio:rate1h > (14.4 * 0.01)
         for: 2m
         labels: {severity: critical}
         annotations:
           summary: "Le budget d'erreur du SLO 99 % brule 14,4 fois trop vite"
-          runbook: "docs/runbooks/api-indisponible.md"
+          runbook: "https://github.com/soulaymahableni/devsecops-portfolio-next/blob/main/docs/runbooks/api-indisponible.md"
+      - alert: ApiSloViolated
+        expr: (1 - api:http_error_ratio:rate1h) < 0.99
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "SLO non respecte : disponibilite de l'API inferieure a 99 % sur 1 h"
+          runbook: "https://github.com/soulaymahableni/devsecops-portfolio-next/blob/main/docs/runbooks/api-indisponible.md"
       - alert: ApiLatencyP95High
         expr: api:http_latency_p95:rate5m > 0.5
         for: 5m
         labels: {severity: warning}
         annotations:
           summary: "Latence p95 de l'API superieure a 500 ms"
-          runbook: "docs/runbooks/api-indisponible.md"
+          runbook: "https://github.com/soulaymahableni/devsecops-portfolio-next/blob/main/docs/runbooks/api-indisponible.md"

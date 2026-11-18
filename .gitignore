@@ -51,3 +51,4 @@ crash.log
 
 # Automatisation (sorties Terraform générées)
 automation/generated/
+vagrant/k3s/.vagrant/
