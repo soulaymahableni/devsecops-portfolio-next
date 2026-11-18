@@ -184,5 +184,66 @@ pipeline {
         }
       }
     }
+
+    // Q238 : analyse dynamique OWASP ZAP sur DEV, des qu'Argo CD a deploye la nouvelle version
+    stage('DAST ZAP (DEV)') {
+      steps {
+        sh '''
+          set -e
+          FRONT=$(grep -o 'digest: sha256:[a-f0-9]*' push-portfolio.log | tail -1 | awk '{print $2}')
+          test -n "$FRONT"
+          bash automation/attendre-deploiement.sh dev frontend $FRONT
+          bash automation/dast-zap.sh dev zap-out/dev
+        '''
+      }
+      post { always { archiveArtifacts artifacts: 'zap-out/**', allowEmptyArchive: true } }
+    }
+
+    // Q240 : promotion automatique vers STAGING (par Git), puis controles AVANT la production
+    stage('Promotion STAGING') {
+      steps {
+        withCredentials([string(credentialsId: 'gitops-token', variable: 'GITOPS_TOKEN')]) {
+          sh '''
+            set -e
+              API=$(grep -o 'digest: sha256:[a-f0-9]*' push-api.log | tail -1 | awk '{print $2}')
+              FRONT=$(grep -o 'digest: sha256:[a-f0-9]*' push-portfolio.log | tail -1 | awk '{print $2}')
+              test -n "$API" && test -n "$FRONT"
+              DRY_RUN=0 bash automation/gitops-update.sh staging api $API
+              DRY_RUN=0 bash automation/gitops-update.sh staging portfolio $FRONT
+              bash automation/attendre-deploiement.sh staging api $API
+              bash automation/attendre-deploiement.sh staging frontend $FRONT
+          '''
+        }
+      }
+    }
+
+    // Q239-Q241 : test de charge k6 sur STAGING, les seuils font echouer le pipeline
+    stage('Tests de charge k6 (STAGING)') {
+      steps { sh 'bash automation/load-k6.sh staging k6-out/staging' }
+      post { always { archiveArtifacts artifacts: 'k6-out/**', allowEmptyArchive: true } }
+    }
+
+    stage('DAST ZAP (STAGING)') {
+      steps { sh 'bash automation/dast-zap.sh staging zap-out/staging' }
+      post { always { archiveArtifacts artifacts: 'zap-out/**', allowEmptyArchive: true } }
+    }
+
+    // Q240 : la production n'est promue que si tous les controles STAGING ont reussi
+    stage('Promotion PROD') {
+      steps {
+        withCredentials([string(credentialsId: 'gitops-token', variable: 'GITOPS_TOKEN')]) {
+          sh '''
+            set -e
+              API=$(grep -o 'digest: sha256:[a-f0-9]*' push-api.log | tail -1 | awk '{print $2}')
+              FRONT=$(grep -o 'digest: sha256:[a-f0-9]*' push-portfolio.log | tail -1 | awk '{print $2}')
+              test -n "$API" && test -n "$FRONT"
+              DRY_RUN=0 bash automation/gitops-update.sh prod api $API
+              DRY_RUN=0 bash automation/gitops-update.sh prod portfolio $FRONT
+              bash automation/attendre-deploiement.sh prod api $API
+              bash automation/attendre-deploiement.sh prod frontend $FRONT
+          '''
+        }
+      }
+    }
   }
 }
