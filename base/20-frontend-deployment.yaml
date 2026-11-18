@@ -35,6 +35,12 @@ spec:
           ports:
             - containerPort: 3000
           env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://192.168.190.141:4318"
+            - name: DEPLOY_ENV
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             - name: API_URL
               valueFrom:
                 configMapKeyRef:
