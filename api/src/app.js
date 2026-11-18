@@ -4,7 +4,7 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const { z } = require("zod");
 const prisma = require("./db");
-const { observability, metricsHandler } = require("./observability");
+const { observability, metricsHandler, withSpan } = require("./observability");
 const { publishContact } = require("./aws");
 const { profile, projects, skills } = require("./data/portfolio");
 
@@ -68,11 +68,21 @@ app.post("/api/contact", contactLimiter, async (req, res, next) => {
   }
   // Q54 : l'enregistrement en base viendra ici
   try {
-    const saved = await prisma.message.create({ data: result.data });
+    const saved = await withSpan(
+      req,
+      "postgresql INSERT Message",
+      { "db.system.name": "postgresql", "db.operation.name": "INSERT", "db.collection.name": "Message", "peer.service": "postgres" },
+      () => prisma.message.create({ data: result.data })
+    );
     // Q114 : archive S3 + notification SQS (Floci). Un échec ne bloque pas la réponse.
     let notification = "désactivée";
     try {
-      const sent = await publishContact({ id: saved.id, ...result.data });
+      const sent = await withSpan(
+        req,
+        "floci S3 PutObject + SQS SendMessage",
+        { "peer.service": "floci", "rpc.system": "aws-api" },
+        () => publishContact({ id: saved.id, ...result.data })
+      );
       if (sent.enabled) notification = "envoyée";
     } catch (awsErr) {
       notification = "échec";
