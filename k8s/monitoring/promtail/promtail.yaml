@@ -1,0 +1,28 @@
+# Q231-Q232 : collecte des journaux des pods de l'application (frontend, API, Postgres)
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+positions:
+  filename: /positions/positions.yaml
+clients:
+  - url: http://localhost:3100/loki/api/v1/push
+scrape_configs:
+  - job_name: pods-portfolio
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: pods
+          __path__: /var/log/pods/portfolio*/*/*.log
+    pipeline_stages:
+      - regex:
+          source: filename
+          expression: '/var/log/pods/(?P<namespace>[^_]+)_(?P<pod>[^_]+)_[^/]+/(?P<container>[^/]+)/\d+\.log'
+      - cri: {}
+      - json:
+          expressions:
+            level: level
+      - labels:
+          namespace:
+          pod:
+          container:
+          level:

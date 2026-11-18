@@ -60,7 +60,14 @@
           "unit": "reqps"
         },
         "overrides": []
-      }
+      },
+      "links": [
+        {
+          "title": "Voir les logs de ces requetes",
+          "url": "/explore?schemaVersion=1&orgId=1&panes={\"a\":{\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{namespace=~\\\"portfolio-.*\\\", container=~\\\"api|frontend\\\"}\",\"datasource\":{\"type\":\"loki\",\"uid\":\"loki\"}}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 3,
@@ -88,7 +95,14 @@
           "unit": "percent"
         },
         "overrides": []
-      }
+      },
+      "links": [
+        {
+          "title": "Voir les logs en erreur (5xx)",
+          "url": "/explore?schemaVersion=1&orgId=1&panes={\"a\":{\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{namespace=~\\\"portfolio-.*\\\", container=\\\"api\\\"} | json | status >= 500\",\"datasource\":{\"type\":\"loki\",\"uid\":\"loki\"}}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}}",
+          "targetBlank": true
+        }
+      ]
     },
     {
       "id": 4,
@@ -172,6 +186,38 @@
           "unit": "s"
         },
         "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "type": "logs",
+      "title": "Logs du frontend et de l'API (Loki) : cliquer une ligne puis Voir la trace",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 24,
+        "h": 11
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{namespace=~\"portfolio-.*\", container=~\"api|frontend\"}"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "enableLogDetails": true,
+        "sortOrder": "Descending",
+        "prettifyLogMessage": false
       }
     }
   ]
