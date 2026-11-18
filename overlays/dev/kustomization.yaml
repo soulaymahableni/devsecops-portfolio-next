@@ -15,7 +15,7 @@ images:
     digest: sha256:c98ad2554e11b8685db982888d8746292c52e1216082252b1df6d05425f95702
   - name: devsecops-api
     newName: 192.168.190.141:8085/portfolio/devsecops-api
-    digest: sha256:09b4e61be676a2c127288ea1a3e2b8799daed63c692cc240a315b33df8507c28
+    digest: sha256:6d0774f1f659216f7f83a65dd1ab9cee6c942997921ed85a3ac63c9ba805a200
 patches:
   - target:
       kind: ConfigMap
