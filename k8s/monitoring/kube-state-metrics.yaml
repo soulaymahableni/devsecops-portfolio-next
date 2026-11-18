@@ -1,0 +1,39 @@
+# Q221 : kube-state-metrics fournit le nombre de pods et les redemarrages (metriques kube_pod_*)
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: kube-state-metrics, namespace: monitoring}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: kube-state-metrics-lecture}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: kube-state-metrics-lecture}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: kube-state-metrics-lecture}
+subjects: [{kind: ServiceAccount, name: kube-state-metrics, namespace: monitoring}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: kube-state-metrics, namespace: monitoring}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: kube-state-metrics}}
+  template:
+    metadata: {labels: {app: kube-state-metrics}}
+    spec:
+      serviceAccountName: kube-state-metrics
+      securityContext: {runAsNonRoot: true, runAsUser: 65534, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: kube-state-metrics
+          image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.19.1
+          imagePullPolicy: IfNotPresent
+          args: [--port=8080, --telemetry-port=8081, --resources=pods]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          ports: [{containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /readyz, port: 8081}, periodSeconds: 10}
+          resources: {requests: {cpu: 20m, memory: 40Mi}, limits: {memory: 120Mi}}

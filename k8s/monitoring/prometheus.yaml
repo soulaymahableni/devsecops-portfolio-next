@@ -14,6 +14,9 @@ rules:
   - apiGroups: [""]
     resources: [pods]
     verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [nodes, nodes/proxy, nodes/metrics]
+    verbs: [get, list, watch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -43,6 +46,25 @@ data:
           - {source_labels: [__meta_kubernetes_pod_ip], regex: '(.+)', replacement: '$1:4000', target_label: __address__}
           - {source_labels: [__meta_kubernetes_namespace], target_label: namespace}
           - {source_labels: [__meta_kubernetes_pod_name], target_label: pod}
+      - job_name: cadvisor
+        scheme: https
+        tls_config: {ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt}
+        authorization: {credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token}
+        kubernetes_sd_configs: [{role: node}]
+        relabel_configs:
+          - {target_label: __address__, replacement: 'kubernetes.default.svc:443'}
+          - {source_labels: [__meta_kubernetes_node_name], regex: '(.+)', target_label: __metrics_path__, replacement: '/api/v1/nodes/$1/proxy/metrics/cadvisor'}
+        metric_relabel_configs:
+          - {source_labels: [__name__], regex: 'container_cpu_usage_seconds_total|container_memory_working_set_bytes', action: keep}
+          - {source_labels: [namespace], regex: 'portfolio.*', action: keep}
+      - job_name: kube-state-metrics
+        kubernetes_sd_configs: [{role: pod, namespaces: {names: [monitoring]}}]
+        relabel_configs:
+          - {source_labels: [__meta_kubernetes_pod_label_app], regex: kube-state-metrics, action: keep}
+          - {source_labels: [__meta_kubernetes_pod_ip], regex: '(.+)', replacement: '$1:8080', target_label: __address__}
+        metric_relabel_configs:
+          - {source_labels: [__name__], regex: 'kube_pod_status_phase|kube_pod_container_status_restarts_total|kube_pod_info', action: keep}
+          - {source_labels: [namespace], regex: 'portfolio.*', action: keep}
   rules.yml: |
     groups:
       - name: api-sli
