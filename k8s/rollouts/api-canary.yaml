@@ -1,63 +1,80 @@
 # Q245-Q247 : deploiement progressif de l'API (Canary) avec analyse Prometheus.
-# Prepare, non deploye : voir README, section « Activite 9 ».
+# Les pods portent app=api : Prometheus les decouvre et le Service « api » leur envoie du trafic.
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
 metadata:
   name: api-canary
-  labels:
-    app: api-canary
+  namespace: portfolio-dev
 spec:
   replicas: 4
   revisionHistoryLimit: 2
   selector:
-    matchLabels:
-      app: api-canary
+    matchLabels: {app: api, rollout: canary}
   strategy:
     canary:
-      # Q246 : 10 % -> 25 % -> 50 % -> 100 %, avec une analyse automatique a chaque palier
+      # Q246 : 10 % -> 25 % -> 50 % -> 100 %, analyse automatique avant chaque palier
       steps:
         - setWeight: 10
-        - pause: {duration: 60s}
+        - pause: {duration: 30s}
         - analysis:
-            templates:
-              - templateName: taux-erreurs-5xx
-            args:
-              - name: namespace
-                value: portfolio-dev
+            templates: [{templateName: taux-erreurs-5xx}]
+            args: [{name: namespace, value: portfolio-dev}]
         - setWeight: 25
-        - pause: {duration: 60s}
+        - pause: {duration: 30s}
         - setWeight: 50
-        - pause: {duration: 60s}
+        - pause: {duration: 30s}
         - setWeight: 100
   template:
     metadata:
-      labels:
-        app: api-canary
+      labels: {app: api, rollout: canary}
     spec:
       serviceAccountName: portfolio-app
-      imagePullSecrets:
-        - name: harbor-pull
+      imagePullSecrets: [{name: harbor-pull}]
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
-        seccompProfile:
-          type: RuntimeDefault
+        seccompProfile: {type: RuntimeDefault}
       containers:
         - name: api
-          image: 192.168.190.141:8085/portfolio/devsecops-api@sha256:6d0774f1f659216f7f83a65dd1ab9cee6c942997921ed85a3ac63c9ba805a200
+          image: 192.168.190.141:8085/portfolio/devsecops-api:1.4
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-          ports:
-            - containerPort: 4000
+            capabilities: {drop: ["ALL"]}
+          ports: [{containerPort: 4000}]
+          env:
+            - name: DEPLOY_ENV
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: PORT
+              valueFrom:
+                configMapKeyRef: {name: portfolio-config, key: PORT}
+            - name: CORS_ORIGIN
+              valueFrom:
+                configMapKeyRef: {name: portfolio-config, key: CORS_ORIGIN}
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef: {name: portfolio-config, key: POSTGRES_HOST}
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef: {name: portfolio-config, key: POSTGRES_USER}
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef: {name: portfolio-config, key: POSTGRES_DB}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: portfolio-secret, key: POSTGRES_PASSWORD}
+            - name: DATABASE_URL
+              value: postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(POSTGRES_HOST):5432/$(POSTGRES_DB)?schema=public
+          startupProbe:
+            httpGet: {path: /api/health, port: 4000}
+            periodSeconds: 2
+            failureThreshold: 30
           readinessProbe:
-            httpGet:
-              path: /api/health
-              port: 4000
+            httpGet: {path: /api/health, port: 4000}
             periodSeconds: 10
           resources:
-            requests: {cpu: 50m, memory: 96Mi}
+            requests: {cpu: 25m, memory: 64Mi}
             limits: {memory: 192Mi}

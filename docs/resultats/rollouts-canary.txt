@@ -1,0 +1,10 @@
+# Canary : api-canary, 4 pods, passage de la version 1.4 (stable) a la version 1.5 (2026-11-19)
+# kubectl-argo-rollouts -n portfolio-dev set image api-canary api=192.168.190.141:8085/portfolio/devsecops-api:1.5
+----- 20:52:33  Status: Progressing  Step 0/8  SetWeight 10  ActualWeight 0
+----- 20:53:01  Status: Paused (CanaryPauseStep)  Step 1/8  SetWeight 10  ActualWeight 20
+----- 20:53:28  Status: Progressing  Step 2/8  SetWeight 10  ActualWeight 20  AnalysisRun Running
+----- 20:53:58  Step 2/8  AnalysisRun api-canary-b45fb8b77-2-2  Successful (3 mesures reussies)
+----- 20:54:24  Status: Paused  Step 4/8  SetWeight 25  ActualWeight 25
+----- 20:55:22  Status: Progressing  Step 5/8  SetWeight 50  ActualWeight 33
+----- 20:55:51  Status: Paused  Step 6/8  SetWeight 50  ActualWeight 50
+----- 20:56:17  Status: Progressing  Step 7/8  SetWeight 100  ActualWeight 66
