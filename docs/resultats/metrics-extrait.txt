@@ -1,0 +1,9 @@
+# HELP http_requests_total Nombre de requetes HTTP
+# TYPE http_requests_total counter
+http_requests_total{method="GET",route="/api/health",status="200"} 526
+http_requests_total{method="GET",route="/metrics",status="200"} 234
+http_requests_total{method="POST",route="/api/contact",status="201"} 3
+http_requests_total{method="GET",route="/api/profile",status="200"} 3
+http_requests_total{method="GET",route="/api/skills",status="200"} 3
+http_requests_total{method="GET",route="/api/projects",status="200"} 3
+http_request_duration_seconds_sum{method="GET",route="/api/health",status="200"} 0.8357946480000001
