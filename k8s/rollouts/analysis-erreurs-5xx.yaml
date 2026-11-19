@@ -1,4 +1,4 @@
-# Q247 : analyse Prometheus. Si le taux d'erreurs 5xx depasse 5 %, la progression Canary est annulee (rollback automatique).
+# Q247 : analyse Prometheus. Si le taux d'erreurs 5xx depasse le seuil, la progression Canary est annulee (rollback automatique).
 apiVersion: argoproj.io/v1alpha1
 kind: AnalysisTemplate
 metadata:
@@ -6,17 +6,18 @@ metadata:
 spec:
   args:
     - name: namespace
+    - name: seuil
+      value: "0.05"
   metrics:
     - name: erreurs-5xx
-      interval: 30s
-      count: 4
-      failureLimit: 1
-      # pas de trafic (aucune requete) : on considere l'analyse comme reussie
-      successCondition: result[0] < 0.05
+      interval: 20s
+      count: 3
+      failureLimit: 0
+      successCondition: result[0] < {{args.seuil}}
       provider:
         prometheus:
           address: http://prometheus.monitoring.svc.cluster.local:9090
           query: |
-            (sum(rate(http_requests_total{namespace="{{args.namespace}}",status=~"5.."}[2m])) or vector(0))
+            (sum(rate(http_requests_total{namespace="{{args.namespace}}",status=~"5.."}[1m])) or vector(0))
             /
-            (sum(rate(http_requests_total{namespace="{{args.namespace}}"}[2m])) > 0 or vector(1))
+            (sum(rate(http_requests_total{namespace="{{args.namespace}}"}[1m])) > 0 or vector(1))

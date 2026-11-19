@@ -3073,14 +3073,14 @@ Même commande sur le même environnement (STAGING), avant puis après le déplo
 
 # Activité 9 : sections 47 à 52 (Q243 à Q268)
 
-**État honnête.** Cette activité n'a pas été déployée dans le laboratoire : les téléchargements de la journée (l'image ZAP de 1,1 Go avec un réseau à 5 Mbps) et les 5,4 Go de RAM de la VM, déjà presque saturés par K3s, Harbor, Argo CD, Prometheus et Kyverno, ne laissaient pas la place d'installer Argo Rollouts, CloudNativePG, Velero, Keycloak et Istio avant l'échéance. Ce chapitre contient donc :
-- les **manifestes de la section 47**, écrits et validés (YAML), **non déployés** ;
+**État honnête.** La **section 47 (Progressive Delivery)** a été **réalisée pour de vrai** dans le laboratoire (Argo Rollouts, Blue/Green, Canary, analyse Prometheus, rollback automatique), avec captures. Les **sections 48 à 52** n'ont **pas** été déployées : les 5,4 Go de RAM de la VM, déjà presque saturés par K3s, Harbor, Argo CD, Prometheus et Kyverno (Kyverno est même tombé pendant la section 47, voir plus bas), ne laissent pas la place à CloudNativePG, Velero, Keycloak et Istio. Ce chapitre contient donc :
+- la section 47 réalisée, avec ses preuves ;
 - les **réponses de réflexion** (comparaisons, explications) qui ne demandent pas d'installation ;
 - la **démarche prévue** pour le reste, avec la limite réelle.
 
 | Section | Questions | État |
 |---|---|---|
-| 47 Progressive Delivery | 243-248 | ⚠️ manifestes Blue/Green, Canary et analyse Prometheus écrits ; non déployés ; explication Q248 rédigée |
+| 47 Progressive Delivery | 243-248 | ✅ Q243 à Q247 réalisées avec captures ; Q248 : explication rédigée, feature flag OpenFeature **non implémenté** |
 | 48 CloudNativePG | 249-252 | ⚠️ comparaison Q251 rédigée ; non installé |
 | 49 Velero | 253-256 | ❌ non réalisé (démarche décrite) |
 | 50 Keycloak | 257-261 | ❌ non réalisé (démarche décrite) |
@@ -3094,10 +3094,44 @@ Les fichiers sont dans `k8s/rollouts/` :
 | Fichier | Rôle |
 |---|---|
 | `api-bluegreen.yaml` | **Blue/Green** (Q244) : la nouvelle version est déployée à côté de l'ancienne, testée par un service de prévisualisation, puis le trafic bascule d'un coup à la promotion (`autoPromotionEnabled: false`) |
-| `api-canary.yaml` | **Canary** (Q245-Q246) : progression **10 % → 25 % → 50 % → 100 %** avec une pause de 60 s à chaque palier et une analyse après le premier palier |
+| `api-canary.yaml` | **Canary** (Q245-Q246) : progression **10 % → 25 % → 50 % → 100 %** avec une pause de 30 s à chaque palier et une analyse après le premier palier |
 | `analysis-erreurs-5xx.yaml` | **Rollback automatique** (Q247) : `AnalysisTemplate` qui interroge Prometheus ; si le taux d'erreurs 5xx dépasse **5 %**, Argo Rollouts annule la progression et revient à la version stable |
 
-L'installation (Q243) se fait avec `kubectl create namespace argo-rollouts` puis l'application du manifeste officiel d'Argo Rollouts, et `kubectl argo rollouts get rollout api-canary --watch` suit la progression. **Cette installation n'a pas été exécutée**, donc la capture de rollback automatique demandée n'est pas fournie.
+### Ce qui a été fait, avec les preuves
+
+**Installation (Q243).** `kubectl create namespace argo-rollouts`, puis le manifeste officiel d'Argo Rollouts (v1.10.2). Deux difficultés : les définitions de ressources (CRD) sont trop grosses pour `kubectl apply` (« metadata.annotations: Too long ») : il faut `kubectl apply --server-side` ; et l'image de `quay.io` n'a pas pu être téléchargée par K3s (`i/o timeout`) : elle a été téléchargée avec Docker (avec reprise) puis importée dans K3s (`docker save | k3s ctr images import -`). Résultat : `argo-rollouts-... 1/1 Running`. Le plugin `kubectl-argo-rollouts` permet de suivre les déploiements.
+
+**Blue/Green (Q244)**, `docs/resultats/rollouts-bluegreen.txt` : la version 1.4 est active ; on déploie la 1.5, qui démarre **à côté** (« preview », sans trafic de production), puis `promote` bascule d'un coup.
+
+![Blue/Green : 1.4 active](docs/captures/activite8/q244-bluegreen-blue-actif.png)
+
+![Blue/Green avant et après promotion](docs/captures/activite8/q244-bluegreen-avant-apres-promotion.png)
+
+*À lire sur la capture :* avant la promotion, **deux** ReplicaSets existent (`revision:1 stable,active` en 1.4 et `revision:2 preview` en 1.5) et le statut est `Paused / BlueGreenPause` ; après, la 1.5 est `stable,active` et l'ancien ReplicaSet est `ScaledDown`.
+
+**Canary (Q245 et Q246)**, `docs/resultats/rollouts-canary.txt` : 4 pods, passage de la 1.4 à la 1.5.
+
+| Heure | Palier | Poids réel | Remarque |
+|---|---|---|---|
+| 20:53:01 | 10 % (pause 30 s) | 20 % | avec 4 pods, le plus petit pas est 1 pod sur 4 |
+| 20:53:58 | analyse Prometheus | | `AnalysisRun ✔ Successful` (3 mesures) |
+| 20:54:24 | 25 % | 25 % | |
+| 20:55:51 | 50 % | 50 % | |
+| 20:56:17 | 100 % | 66 % puis 100 % | |
+
+![Canary : début de la progression](docs/captures/activite8/q245-canary-progression-1.png)
+
+![Canary : paliers 50 % et 100 %](docs/captures/activite8/q246-canary-progression-2.png)
+
+**Rollback automatique (Q247)**, `docs/resultats/rollouts-rollback.txt`. L'`AnalysisTemplate` interroge Prometheus : taux d'erreurs 5xx de l'API sur la dernière minute (`sum(rate(http_requests_total{status=~"5.."}[1m])) / sum(rate(http_requests_total[1m]))`) ; le seuil par défaut est de **5 %** (`failureLimit: 0`).
+
+![Rollback automatique](docs/captures/activite8/q247-rollback-automatique.png)
+
+*À lire sur la capture :* après le déploiement d'une nouvelle version, `AnalysisRun ✖ Failed`, puis `RolloutAborted: ... Metric "erreurs-5xx" assessed Failed`, statut `Degraded` et, surtout, `devsecops-api:1.5 (stable)` : la version précédente reste en service, **sans intervention humaine**.
+
+**Limite assumée de cette preuve :** l'API n'a pas de route qui renvoie des erreurs 5xx, et je ne voulais pas la casser. La panne a donc été **simulée en rendant le seuil de l'analyse impossible** (`erreurs < -1`), puis remis à 5 %. Cela prouve le mécanisme (Prometheus, analyse, abandon automatique), pas la détection d'une vraie régression. Le déploiement des Rollouts a été fait avec `kubectl apply` dans `portfolio-dev`, **pas** par la branche `gitops` : ce sont des essais de laboratoire, non gérés par Argo CD.
+
+**Incident pendant l'essai :** avec 4 pods Canary, 1 pod Blue/Green et Argo Rollouts en plus du reste, la mémoire est tombée à 190 Mo libres ; Kyverno (qui vérifie les signatures de toutes les images) a redémarré, et pendant ce temps plus aucun pod ne pouvait être créé (`no endpoints available for service "kyverno-svc"`). Le Rollout Canary a été supprimé après avoir pris ses preuves, ce qui a libéré la mémoire et fait revenir Kyverno. C'est un bon exemple de pourquoi Kyverno est en mode bloquant : un service de sécurité arrêté ne laisse pas passer d'image non vérifiée.
 
 Les pods des manifestes respectent les mêmes règles que le reste du dépôt (`runAsNonRoot`, `allowPrivilegeEscalation: false`, profil seccomp, limites de mémoire).
 
@@ -3183,7 +3217,7 @@ Les runners auto-hébergés dans Kubernetes (Actions Runner Controller, Q267-Q26
 | Section 44 : Loki et corrélation métriques, journaux, traces | 231-233 | ✅ fait |
 | Section 45 : SLI, SLO, alertes et runbook | 234-237 | ✅ fait (sans Alertmanager) |
 | Section 46 : OWASP ZAP et k6 | 238-242 | ✅ fait (ZAP : 11 alertes avant, 8 après, aucune de niveau élevé ; k6 : seuils respectés) |
-| Section 47 : Progressive Delivery | 243-248 | ⚠️ manifestes écrits, non déployés |
+| Section 47 : Progressive Delivery | 243-248 | ✅ Q243-Q247 faites ; Q248 expliquée, OpenFeature non implémenté |
 | Section 48 : CloudNativePG | 249-252 | ⚠️ comparaison rédigée, non installé |
 | Section 49 : Velero | 253-256 | ❌ non réalisé |
 | Section 50 : Keycloak | 257-261 | ❌ non réalisé |

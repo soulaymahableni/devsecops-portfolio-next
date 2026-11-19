@@ -1,0 +1,10 @@
+# Rollback automatique : seuil de l'analyse rendu impossible (erreurs < -1), puis deploiement de la version 1.4
+# (version stable avant l'essai : 1.5). 2026-11-19
+----- 21:01:08  Status: Paused  Step 1/8  Images: devsecops-api:1.4 (canary)
+----- 21:01:49  Status: Degraded
+Message: RolloutAborted: Rollout aborted update to revision 3: Step-based analysis phase error/failed: Metric "erreurs-5xx" assessed Failed due to failed (1) > failureLimit (0)
+  Step: 0/8
+Images: 192.168.190.141:8085/portfolio/devsecops-api:1.5 (stable)
+  AnalysisRun api-canary-6d4b79b876-3-2   Failed  13s
+  AnalysisRun api-canary-b45fb8b77-2-2    Successful  8m34s
+----- 21:03:43  Status: Degraded (RolloutAborted, meme message)  Images: devsecops-api:1.5 (stable)  AnalysisRun Failed 2m6s

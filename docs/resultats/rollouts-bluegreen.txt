@@ -1,0 +1,15 @@
+# Blue/Green : api-bluegreen, 1 pod, version 1.4 active puis version 1.5 en previsualisation, promotion (2026-11-19)
+===== AVANT PROMOTION
+Status: Paused (BlueGreenPause)   Strategy: BlueGreen
+Images: devsecops-api:1.4 (stable, active)
+        devsecops-api:1.5 (preview)
+Replicas: Desired 1  Current 2  Updated 1  Ready 1  Available 1
+  revision:2  ReplicaSet api-bluegreen-5fb9fd454d  Healthy  preview   (pod Running 1/1)
+  revision:1  ReplicaSet api-bluegreen-5757bb895c  Healthy  stable,active (pod Running 1/1)
+rollout 'api-bluegreen' promoted
+===== APRES PROMOTION
+Status: Healthy   Strategy: BlueGreen
+Images: devsecops-api:1.5 (stable, active)
+Replicas: Desired 1  Current 1  Updated 1  Ready 1  Available 1
+  revision:2  ReplicaSet api-bluegreen-5fb9fd454d  Healthy  stable,active
+  revision:1  ReplicaSet api-bluegreen-5757bb895c  ScaledDown (pod Terminating)
