@@ -1,0 +1,66 @@
+# Q244 : Blue/Green. La nouvelle version (green) est deployee a cote de l'ancienne (blue),
+# testee via le service de previsualisation, puis le trafic bascule d'un coup apres promotion.
+# Prepare, non deploye : voir README, section « Activite 9 ».
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: api-bluegreen
+  labels:
+    app: api-bluegreen
+spec:
+  replicas: 2
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels:
+      app: api-bluegreen
+  strategy:
+    blueGreen:
+      activeService: api-bluegreen-active
+      previewService: api-bluegreen-preview
+      autoPromotionEnabled: false
+  template:
+    metadata:
+      labels:
+        app: api-bluegreen
+    spec:
+      serviceAccountName: portfolio-app
+      imagePullSecrets:
+        - name: harbor-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: 192.168.190.141:8085/portfolio/devsecops-api@sha256:6d0774f1f659216f7f83a65dd1ab9cee6c942997921ed85a3ac63c9ba805a200
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 4000
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 4000
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {memory: 192Mi}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: api-bluegreen-active}
+spec:
+  selector: {app: api-bluegreen}
+  ports: [{port: 4000, targetPort: 4000}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: api-bluegreen-preview}
+spec:
+  selector: {app: api-bluegreen}
+  ports: [{port: 4000, targetPort: 4000}]

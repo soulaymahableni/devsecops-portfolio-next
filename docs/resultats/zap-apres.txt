@@ -1,0 +1,13 @@
+# bash automation/dast-zap.sh staging zap-out/apres   (frontend 1.2, apres correction)
+FAIL-NEW: 0     FAIL-INPROG: 0  WARN-NEW: 4     WARN-INPROG: 0  INFO: 0 IGNORE: 0       PASS: 64
+RISQUE   INSTANCES      ALERTE
+Medium   5              CSP: script-src unsafe-inline
+Medium   5              CSP: style-src unsafe-inline
+Low      3              Cross-Origin-Embedder-Policy Header Missing or Invalid
+Low      3              Cross-Origin-Opener-Policy Header Missing or Invalid
+Low      5              Cross-Origin-Resource-Policy Header Missing or Invalid
+Informational 1              Information Disclosure - Sensitive Information in URL
+Informational 5              Non-Storable Content
+Informational 3              Storable and Cacheable Content
+
+Total : 8 alerte(s), dont 0 au niveau high ou plus

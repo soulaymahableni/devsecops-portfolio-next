@@ -1,0 +1,16 @@
+# bash automation/dast-zap.sh staging zap-out/avant   (frontend 1.1, avant correction)
+FAIL-NEW: 0     FAIL-INPROG: 0  WARN-NEW: 8     WARN-INPROG: 0  INFO: 0 IGNORE: 0       PASS: 60
+RISQUE   INSTANCES      ALERTE
+Medium   5              Content Security Policy (CSP) Header Not Set
+Medium   5              Missing Anti-clickjacking Header
+Low      3              Cross-Origin-Embedder-Policy Header Missing or Invalid
+Low      3              Cross-Origin-Opener-Policy Header Missing or Invalid
+Low      5              Cross-Origin-Resource-Policy Header Missing or Invalid
+Low      5              Permissions Policy Header Not Set
+Low      5              Server Leaks Information via "X-Powered-By" HTTP Response Header Field(s)
+Low      5              X-Content-Type-Options Header Missing
+Informational 1              Information Disclosure - Sensitive Information in URL
+Informational 5              Non-Storable Content
+Informational 4              Storable and Cacheable Content
+
+Total : 11 alerte(s), dont 0 au niveau high ou plus

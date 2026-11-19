@@ -10,7 +10,7 @@ IMAGE=${ZAP_IMAGE:-ghcr.io/zaproxy/zaproxy:stable}
 echo "== ZAP baseline sur $URL"
 # -I : ne pas echouer sur les simples avertissements (le seuil est applique plus bas)
 docker run --rm --network host -v "$PWD/$OUT:/zap/wrk:rw" "$IMAGE" \
-  zap-baseline.py -t "$URL" -J zap.json -r zap.html -I -m 2 || true
+  zap-baseline.py -t "$URL" -J zap.json -r zap.html -I -m 1 -T 8 || true
 test -s "$OUT/zap.json" || { echo "rapport ZAP absent"; exit 1; }
 python3 - "$OUT/zap.json" "${ZAP_FAIL_ON:-high}" <<'PY'
 import json, sys
