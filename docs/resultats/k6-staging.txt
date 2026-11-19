@@ -1,0 +1,31 @@
+# automation/load-k6.sh staging k6-out/staging  (2026-11-18, 10 utilisateurs virtuels, 50 s, seuil p95 1500 ms)
+      {page:projets}
+      ✓ 'p(95)<1500' p(95)=448.41ms
+
+    http_req_failed
+    ✓ 'rate<0.01' rate=0.00%
+
+  █ TOTAL RESULTS
+
+    checks_total.......: 622     12.324802/s
+    checks_succeeded...: 100.00% 622 out of 622
+    checks_failed......: 0.00%   0 out of 622
+
+    ✓ accueil : statut 200
+    ✓ projets : statut 200
+
+    HTTP
+    http_req_duration..............: avg=156.15ms min=7.87ms  med=105.78ms max=934.56ms p(90)=355.19ms p(95)=503.66ms
+      { expected_response:true }...: avg=156.15ms min=7.87ms  med=105.78ms max=934.56ms p(90)=355.19ms p(95)=503.66ms
+      { page:accueil }.............: avg=174.43ms min=12.14ms med=112.69ms max=934.56ms p(90)=402.99ms p(95)=561.7ms
+      { page:projets }.............: avg=137.87ms min=7.87ms  med=97.3ms   max=892.29ms p(90)=298.2ms  p(95)=448.41ms
+    http_req_failed................: 0.00% 0 out of 622
+    http_reqs......................: 622   12.324802/s
+
+    EXECUTION
+    iteration_duration.............: avg=1.31s    min=1.02s   med=1.22s    max=2.2s     p(90)=1.68s    p(95)=1.87s
+    iterations.....................: 311   6.162401/s
+    vus............................: 2     min=1        max=10
+    vus_max........................: 10    min=10       max=10
+
+running (0m50.5s), 00/10 VUs, 311 complete and 0 interrupted iterations

@@ -2,7 +2,16 @@
 // Q226-Q228 : traces OpenTelemetry (actives seulement si OTEL_EXPORTER_OTLP_ENDPOINT est defini)
 const client = require("prom-client");
 const { randomUUID } = require("crypto");
-const { SpanKind, SpanStatusCode } = require("@opentelemetry/api");
+const { SpanKind, SpanStatusCode, ROOT_CONTEXT, trace, isSpanContextValid } = require("@opentelemetry/api");
+
+// Q227 : reprend la trace envoyee par le frontend (en-tete W3C traceparent)
+const TRACEPARENT = /^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/;
+function contexteParent(entete) {
+  const m = typeof entete === "string" ? TRACEPARENT.exec(entete) : null;
+  if (!m) return ROOT_CONTEXT;
+  const sc = { traceId: m[1], spanId: m[2], traceFlags: parseInt(m[3], 16) & 1, isRemote: true };
+  return isSpanContextValid(sc) ? trace.setSpanContext(ROOT_CONTEXT, sc) : ROOT_CONTEXT;
+}
 
 const registry = new client.Registry();
 client.collectDefaultMetrics({ register: registry });
@@ -20,6 +29,9 @@ const httpDuration = new client.Histogram({
   buckets: [0.01, 0.05, 0.1, 0.3, 0.5, 1, 2, 5],
   registers: [registry],
 });
+
+// Sondes et scraping : pas de trace
+const SANS_TRACE = new Set(["/metrics", "/api/health"]);
 
 let tracer = null;
 if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
@@ -46,12 +58,17 @@ function observability(req, res, next) {
   const id = typeof incoming === "string" && /^[\w-]{8,64}$/.test(incoming) ? incoming : randomUUID();
   req.id = id;
   res.setHeader("X-Request-Id", id);
-  const span = tracer
-    ? tracer.startSpan(req.method + " " + req.path, {
-        kind: SpanKind.SERVER,
-        attributes: { "http.request.method": req.method, "url.path": req.path, "request.id": id },
-      })
+  const span = tracer && SANS_TRACE.has(req.path) === false
+    ? tracer.startSpan(
+        req.method + " " + req.path,
+        {
+          kind: SpanKind.SERVER,
+          attributes: { "http.request.method": req.method, "url.path": req.path, "request.id": id },
+        },
+        contexteParent(req.headers.traceparent)
+      )
     : null;
+  req.span = span;
   const traceId = span ? span.spanContext().traceId : undefined;
   if (traceId) res.setHeader("X-Trace-Id", traceId);
   const start = process.hrtime.bigint();
@@ -79,9 +96,23 @@ function observability(req, res, next) {
   next();
 }
 
+// Q228 : span enfant (Postgres, Floci...) rattache a la requete courante
+async function withSpan(req, name, attributes, fn) {
+  if (!tracer || !req.span) return fn();
+  const span = tracer.startSpan(name, { kind: SpanKind.CLIENT, attributes }, trace.setSpan(ROOT_CONTEXT, req.span));
+  try {
+    return await fn();
+  } catch (err) {
+    span.setStatus({ code: SpanStatusCode.ERROR, message: err.name });
+    throw err;
+  } finally {
+    span.end();
+  }
+}
+
 async function metricsHandler(req, res) {
   res.set("Content-Type", registry.contentType);
   res.end(await registry.metrics());
 }
 
-module.exports = { observability, metricsHandler };
+module.exports = { observability, metricsHandler, withSpan };

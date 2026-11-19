@@ -35,5 +35,7 @@ git --no-pager diff -- "$F" | grep -E '^[+-] ' || echo "(aucun changement : meme
 if [ "${DRY_RUN:-1}" = "1" ]; then git checkout -- "$F"; echo "[dry-run] rien n'a ete commite"; exit 0; fi
 git diff --quiet -- "$F" && exit 0
 git -c user.name="jenkins-ci" -c user.email="jenkins@portfolio.local" commit -qam "ci(gitops): $ENVN $COMP -> $DIGEST" -m "Mise a jour automatique par le pipeline Jenkins (build signe)"
-for i in 1 2 3 4 5 6; do git push -q origin gitops && break; sleep 10; done
+ok=0
+for i in 1 2 3 4 5 6; do if git push -q origin gitops; then ok=1; break; fi; sleep 10; done
+[ "$ok" = 1 ] || { echo "ECHEC du push vers gitops : le commit reste local"; exit 1; }
 echo "pousse sur gitops : Argo CD synchronise $ENVN"

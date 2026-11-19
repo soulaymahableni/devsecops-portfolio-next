@@ -2750,17 +2750,44 @@ Le module `api/src/observability.js` (bibliothèque `prom-client`) expose `/metr
 
 `/metrics` est en dehors de `/api`, donc l'Ingress ne l'expose pas à l'extérieur : seul Prometheus, dans le cluster, le lit.
 
+**Exemple de métrique (Q222)**, extrait réel de `/metrics` :
+
+```
+# HELP http_requests_total Nombre de requetes HTTP
+# TYPE http_requests_total counter
+http_requests_total{method="GET",route="/api/health",status="200"} 526
+http_requests_total{method="POST",route="/api/contact",status="201"} 3
+http_request_duration_seconds_sum{method="GET",route="/api/health",status="200"} 0.8357946480000001
+```
+
+C'est un **compteur** (`counter`) : il ne fait qu'augmenter, et c'est `rate(...[5m])` qui le transforme en requêtes par seconde. Les étiquettes `method`, `route` et `status` permettent de séparer les erreurs 5xx du reste, ce qui sert ensuite aux SLI de la section 45. L'étiquette `route` contient le **motif** de la route (pas l'URL complète), pour éviter une explosion du nombre de séries.
+
 ## Prometheus dans le cluster
 `k8s/monitoring/prometheus.yaml` déploie Prometheus (namespace `monitoring`, limite 400 Mo) qui **découvre seul les pods** de l'API : namespaces `portfolio*`, étiquette `app=api`, pod en `Running`, port 4000. Aucune modification des déploiements n'est nécessaire. L'image `prom/prometheus` déjà présente a été importée dans K3s sans téléchargement.
 
 ## Grafana
 Grafana reste en conteneur Docker (son image pèse 2 Go : l'importer dans K3s doublerait l'espace utilisé), avec `--network host` sur le port **3030** (3001 est occupé par l'ancien portfolio du TP1). Sa configuration est versionnée dans `k8s/monitoring/grafana/` : source de données et tableau de bord **provisionnés par fichiers**. Le mot de passe administrateur est généré au hasard au lancement et rangé hors du dépôt.
 
-Le tableau de bord « API Portfolio : observabilité » contient six panneaux : cibles en ligne, requêtes par seconde par environnement, taux d'erreurs 5xx, latence p95 par route, mémoire par pod, ancienneté du processus.
+Le tableau de bord « API Portfolio : observabilité » contient **onze panneaux** : cibles en ligne, requêtes par seconde par environnement, taux d'erreurs 5xx, latence p95 par route, mémoire de l'API, ancienneté du processus, **journaux Loki** (section 44), **CPU par pod**, **mémoire par pod**, **pods en cours d'exécution** et **redémarrages de conteneurs** (Q221). Les panneaux « requêtes par seconde » et « taux d'erreurs » ont un lien vers l'exploration des journaux Loki.
 
 ![Tableau de bord Grafana](docs/captures/activite8/grafana-dashboard-api.png)
 
-*À lire sur la capture :* les 4 cibles sont en ligne, le trafic de test (environ 7 à 8 requêtes par seconde) apparaît pour chaque environnement, et le panneau « Taux d'erreurs 5xx » affiche **« No data »** : l'API n'a renvoyé aucune erreur 5xx, donc le numérateur de la division est vide. Ce n'est pas un défaut de mesure.
+*À lire sur la capture (première version du tableau de bord) :* les 4 cibles sont en ligne, le trafic de test (environ 7 à 8 requêtes par seconde) apparaît pour chaque environnement, et le panneau « Taux d'erreurs 5xx » affiche **« No data »** : l'API n'a renvoyé aucune erreur 5xx, donc le numérateur de la division est vide. Ce n'est pas un défaut de mesure.
+
+## CPU, mémoire, pods et redémarrages (Q221)
+Deux sources de métriques s'ajoutent à l'API :
+- **cAdvisor** (intégré au kubelet) donne le CPU et la mémoire de chaque conteneur. Prometheus le lit **par l'API du cluster** (`/api/v1/nodes/<nœud>/proxy/metrics/cadvisor`), avec le jeton de son compte de service ; le rôle `prometheus-decouverte` reçoit pour cela les droits `nodes`, `nodes/proxy` et `nodes/metrics`. Seules les deux séries utiles (`container_cpu_usage_seconds_total`, `container_memory_working_set_bytes`) des namespaces `portfolio*` sont conservées.
+- **kube-state-metrics** (v2.19.1, `k8s/monitoring/kube-state-metrics.yaml`, limite 120 Mo) donne l'état des pods : phase, redémarrages, informations. Il ne lit que les pods (`--resources=pods`) et son rôle est limité à `list` et `watch` sur les pods.
+
+Le tableau de bord complet, en trois parties : le haut (cibles, requêtes, latence), le milieu (CPU et mémoire par pod) et le bas (journaux Loki).
+
+![Tableau de bord Grafana : haut](docs/captures/activite8/dashboard-haut.png)
+
+![Tableau de bord Grafana : mémoire et CPU par pod](docs/captures/activite8/dashboard-milieu-cpu-memoire.png)
+
+![Tableau de bord Grafana : journaux Loki](docs/captures/activite8/dashboard-bas-logs.png)
+
+*À lire sur les captures :* chaque pod (dev, staging, prod, API, frontend, PostgreSQL) a sa propre courbe ; on voit le pic de CPU et de mémoire au moment du redéploiement (nouveaux pods), puis le retour au calme. L'ancienneté du processus du nouveau pod repart de zéro.
 
 ## Le scraping vu par Prometheus
 Avant que l'API 1.2 (avec `/metrics`) soit promue, seul dev répond :
@@ -2799,6 +2826,75 @@ Le panneau « Ancienneté du processus » de Grafana montre la même chute à z�
 
 ---
 
+# Section 43 : traces OpenTelemetry et Tempo (Q226 à Q230)
+
+```mermaid
+flowchart LR
+  B[Navigateur] --> F[Frontend Next.js<br/>span serveur]
+  F -->|traceparent + X-Request-Id| A[API Express<br/>span HTTP]
+  A --> D[(PostgreSQL<br/>span d'écriture)]
+  F -->|OTLP HTTP 4318| T[Tempo]
+  A -->|OTLP HTTP 4318| T
+  T --> G[Grafana Explore]
+```
+
+## Ce qui est instrumenté
+- **Frontend** : `instrumentation.js` charge `instrumentation.node.js` uniquement si le runtime est Node **et** si `OTEL_EXPORTER_OTLP_ENDPOINT` est défini ; sinon rien ne change. `lib/tracing.js` fournit `tracedFetch` : chaque appel du frontend vers l'API crée un span client, transmet l'en-tête W3C `traceparent` et un identifiant `X-Request-Id`.
+- **API** : `api/src/observability.js` **reprend** le contexte reçu dans `traceparent` (la trace continue au lieu de recommencer), crée un span par requête et un span `withSpan` autour de l'écriture en base. Les sondes (`/metrics`, `/api/health`) sont exclues (`SANS_TRACE`) pour ne pas noyer Tempo ; le span Floci n'existe que si Floci est activé.
+- **Identifiant de corrélation** : un `X-Request-Id` valide (`^[\w-]{8,64}$`) est conservé, sinon il est généré. Il est présent dans l'attribut de span `request.id`, dans les en-têtes de réponse (`X-Request-Id`, `X-Trace-Id`) et dans les **journaux JSON** (`requestId`, `traceId`).
+- Les versions des bibliothèques OpenTelemetry forment une ligne cohérente (API 1.9.1, SDK 2.12.1, exportateur OTLP HTTP 0.223.2).
+- **Tempo** tourne en conteneur Docker (comme Grafana) : OTLP HTTP sur le port 4318, interrogation sur 3200. Les images déployées sont l'**API 1.5** et le **frontend 1.1**, signées et promues par Git comme les précédentes.
+
+## La trace complète (Q227 à Q229)
+Un `POST /api/contact` envoyé depuis le site avec l'identifiant `demo-correlation-0003` donne une seule trace :
+
+![Trace dans Tempo](docs/captures/activite8/q229-trace-resume.png)
+
+*À lire sur la capture :* le service `portfolio-frontend`, la route `POST /api/contact`, **2 services** et **11 spans** pour 284 ms. Le premier service est le frontend (rendu Next.js), le second l'API.
+
+![Attributs du span](docs/captures/activite8/q229-span-attributs-correlation.png)
+
+*À lire sur la capture :* le span client `POST /api/contact` (statut 201, 81,6 ms) porte l'URL interne `http://api.portfolio-dev.svc.cluster.local:4000/api/contact`, `peer.service = portfolio-api`, l'attribut **`request.id = demo-correlation-0003`** et l'environnement `portfolio-dev`.
+
+La recherche d'une trace se fait aussi en ligne de commande avec TraceQL, par exemple `{ span.request.id = "demo-correlation-0003" }`.
+
+---
+
+# Section 44 : journaux avec Loki et corrélation (Q231 à Q233)
+
+## La chaîne de journalisation
+- **Promtail** (conteneur Docker) lit les fichiers de journaux des pods sur la VM et les envoie à **Loki** (conteneur Docker, port 3100) avec les étiquettes `namespace`, `pod`, `container` et `job=pods`.
+- L'API et le frontend écrivent des **journaux JSON** : `ts`, `level`, `msg`, `requestId`, `traceId`, `method`, `route`, `status`, `durationMs`.
+- Grafana a trois sources de données provisionnées (`k8s/monitoring/grafana/datasource.yml`) : **Prometheus**, **Tempo** et **Loki**. Dans Loki, deux **champs dérivés** (`TraceID`, `RequestID`) transforment les identifiants des journaux en liens vers Tempo ; dans Tempo, `tracesToLogsV2` ajoute le bouton **Related logs** qui ouvre Loki filtré sur la trace.
+
+## Retrouver une requête par son identifiant (Q232)
+La requête LogQL `{namespace=~"portfolio-.*"} |= "demo-correlation-0003"` retrouve les journaux du frontend **et** de l'API pour la même requête :
+
+![Journaux Loki filtrés par identifiant](docs/captures/activite8/q232-logs-correlation-id.png)
+
+*À lire sur la capture :* deux lignes, la première du **frontend** (`msg: api_call`), la seconde de l'**API** (`msg: http_request`), avec le **même** `requestId` (surligné) et le **même** `traceId`, et les durées 81 ms côté appelant et 78 ms côté API : la différence est le temps réseau.
+
+![Exploration Loki](docs/captures/activite8/q232-loki-explore.png)
+
+## Des métriques aux traces en trois clics (Q233)
+Depuis un span de la trace dans Tempo, **Related logs** ouvre Loki en vue partagée avec la requête `{namespace=~"portfolio-.*"} |= "<traceId>"` :
+
+![De la trace aux journaux](docs/captures/activite8/q233-trace-vers-logs.png)
+
+*À lire sur la capture :* à gauche la trace, à droite les **2 lignes** de journaux de cette trace (`Logs volume : info, Total 2`). Le panneau « Logs » du tableau de bord Grafana (capture de la section 42) permet la même navigation : clic sur une ligne puis « Voir la trace ». Les panneaux « requêtes par seconde » et « taux d'erreurs » mènent aux journaux, ce qui relie **métriques, journaux et traces**.
+
+### Difficultés rencontrées (sections 43 et 44)
+
+| Problème | Cause | Solution |
+|---|---|---|
+| `next build` refusé (`SecurityFatalError`) | Next.js 16.4.3 touché par des avis de sécurité | passage à **Next.js 16.4.6** (et `eslint-config-next`) |
+| Aucune trace du frontend dans Tempo à la première recherche | délai d'ingestion de Tempo | nouvelle recherche quelques secondes plus tard |
+| Span Floci trompeur dans les traces | Floci désactivé mais span créé | span créé **seulement si Floci est activé** ; sondes exclues des traces (API 1.5) |
+| Pods impossibles à créer pendant que Kyverno était arrêté | webhook de vérification des images en mode bloquant | redémarrage de Kyverno, suppression des ReplicaSet en échec |
+| `DiskPressure` sur le nœud avec 10 % de disque libre | K3s impose 10 % de récupération minimale après éviction | `eviction-minimum-reclaim` abaissé à 1 % (0 % est refusé) et disque agrandi de 70 à 100 Go |
+
+---
+
 # Section 45 : SLI, SLO, alertes et runbook (Q234 à Q237)
 
 ## Indicateurs et objectifs
@@ -2808,16 +2904,24 @@ Le panneau « Ancienneté du processus » de Grafana montre la même chute à z�
 | Disponibilité | part des requêtes qui **ne sont pas** des erreurs 5xx | **99 %** sur 30 jours (budget d'erreur : 1 %) |
 | Latence | p95 de `http_request_duration_seconds` | inférieur à **500 ms** |
 
+**SLI, SLO, SLA (Q235)** :
+- le **SLI** (*Service Level Indicator*) est une **mesure** : par exemple « 99,7 % des requêtes ont réussi sur 1 heure » ;
+- le **SLO** (*Service Level Objective*) est l'**objectif interne** fixé sur cette mesure : « au moins 99 % sur 30 jours » ; l'écart entre 100 % et le SLO est le **budget d'erreur** ;
+- le **SLA** (*Service Level Agreement*) est le **contrat** passé avec le client, avec des conséquences (remboursement, pénalité) si l'engagement n'est pas tenu. Il est en général **moins exigeant** que le SLO, pour garder une marge.
+
+Dans ce projet il n'y a pas de client : il y a des SLI et des SLO, pas de SLA.
+
 Les SLI sont calculés par des **règles d'enregistrement** Prometheus (`api:http_error_ratio:rate5m`, `...:rate1h`, `api:http_latency_p95:rate5m`).
 
 ## Alertes
-Les règles sont dans `k8s/monitoring/rules/api-slo.yml`, **validées avec `promtool check rules`** (`SUCCESS: 6 rules found`), puis injectées dans la ConfigMap de Prometheus.
+Les règles sont dans `k8s/monitoring/rules/api-slo.yml`, **validées avec `promtool check rules`** (`SUCCESS: 7 rules found`), puis injectées dans la ConfigMap de Prometheus.
 
 | Alerte | Condition | Gravité |
 |---|---|---|
 | `ApiTargetDown` | `up{job="api"} == 0` pendant 1 min | warning |
 | `ApiErrorBudgetFastBurn` | taux d'erreurs 5xx supérieur à 14,4 % sur 5 min **et** sur 1 h, pendant 2 min | critical |
 | `ApiLatencyP95High` | p95 supérieur à 500 ms pendant 5 min | warning |
+| `ApiSloViolated` | disponibilité sur 1 h inférieure au SLO de 99 % (`1 - api:http_error_ratio:rate1h < 0.99`) pendant 5 min | critical |
 
 Le seuil **14,4** est le *burn rate* classique : à ce rythme, le budget mensuel de 1 % serait consommé à raison de 2 % par heure (14,4 × 1 h ÷ 720 h). Les deux fenêtres (5 min et 1 h) évitent de déclencher sur un pic très court.
 
@@ -2829,27 +2933,86 @@ Résultat relevé dans Prometheus, quelques minutes après le déploiement : l'a
 ```
 
 ## Runbook
-La procédure à suivre est dans `docs/runbooks/api-indisponible.md` : symptôme et impact, diagnostic dans l'ordre (environnement, événements du pod, journaux avec le `requestId`, base de données, dernier changement sur la branche `gitops`), résolution (retour au digest précédent par `git revert`, suppression du pod, image non signée), escalade et après-incident. Chaque alerte contient une annotation `runbook` qui pointe vers ce fichier.
+La procédure à suivre est dans `docs/runbooks/api-indisponible.md` : symptôme et impact, diagnostic dans l'ordre (environnement, événements du pod, journaux avec le `requestId`, base de données, dernier changement sur la branche `gitops`), résolution (retour au digest précédent par `git revert`, suppression du pod, image non signée), escalade et après-incident. Chaque alerte contient une annotation `runbook` qui contient l'**adresse complète** du fichier sur GitHub (`https://github.com/soulaymahableni/devsecops-portfolio-next/blob/main/docs/runbooks/api-indisponible.md`), cliquable depuis l'interface de Prometheus.
 
 **Limite assumée :** il n'y a pas d'Alertmanager (trop lourd pour la VM) : les alertes sont visibles dans l'interface de Prometheus et dans Grafana, mais aucun message n'est envoyé (courriel, Slack...).
 
 ---
 
-# Limites et réglages de laboratoire (sections 36 à 45)
+# Limites et réglages de laboratoire (sections 36 à 46)
 
 - **RAM** : 5,3 Go au total. Les réplicas des environnements GitOps sont réduits (dev 1, staging 1, prod 2) et les composants lourds (Kyverno, Prometheus, Grafana, Harbor, Argo CD) sont allégés.
-- **Seuil d'éviction du kubelet abaissé à 5 %** dans `/etc/rancher/k3s/config.yaml`, car le disque est occupé à plus de 90 % : un réglage de laboratoire, à ne pas reproduire en production.
+- **Seuil d'éviction du kubelet abaissé à 5 %** dans `/etc/rancher/k3s/config.yaml`, avec une **récupération minimale de 1 %** (`eviction-minimum-reclaim`, 0 % est refusé) : sans cela K3s garde le nœud en `DiskPressure` tant qu'il reste moins de 15 % de disque libre. Réglage de laboratoire, à ne pas reproduire en production.
+- **Disque agrandi de 70 à 100 Go** (LVM : `growpart`, `pvresize`, `lvextend -r`) après le `DiskPressure`.
+- **Next.js 16.4.6** : mise à niveau de sécurité imposée par la construction (16.4.3 est refusé).
+- **Loki, Promtail, Tempo et Grafana** sont des **conteneurs Docker** sur la VM, pas des pods K3s (RAM limitée). Promtail doit pouvoir joindre Loki malgré ufw.
+- **Le span Floci** n'apparaît dans les traces que si Floci est activé (docker-compose).
+- **Jenkins** : les nouvelles étapes du `Jenkinsfile` (GitOps, k6, ZAP) sont écrites et leurs scripts ont été **exécutés à la main** sur la VM ; le pipeline n'a pas été rejoué en entier.
 - **Prometheus** conserve 6 heures de données dans un `emptyDir` : tout est perdu au redémarrage du pod. Les images `prom/prometheus` et `grafana/grafana` sont en `latest` (à épingler).
 - **Harbor** : ufw filtre le trafic entre conteneurs. Après un redémarrage de la VM, le pont Docker de Harbor peut perdre son adresse (`sudo ip addr add 172.19.0.1/16 dev br-...`).
 - **Signatures Cosign** sans journal de transparence (`--tlog-upload=false`) ; la politique Kyverno l'ignore. Acceptable pour un registre privé de laboratoire.
 - **K3s** : la version réelle du cluster est `v1.36.6+k3s1` (le README de l'activité 7 indique `v1.37.2`).
 
-<!-- SUITE-A8:DEBUT -->
-## Suite de l'activité 8 (prochaine pull request)
-- **Section 43** : traces OpenTelemetry, Tempo, identifiant de corrélation (le code de l'API est déjà prêt et désactivé par défaut tant qu'aucun collecteur n'est configuré).
-- **Section 44** : journaux avec Loki, puis navigation métriques, journaux, traces.
-- **Section 46** : OWASP ZAP dans le pipeline et test de charge k6 sur STAGING avant PROD.
-<!-- SUITE-A8:FIN -->
+# Section 46 : DAST avec OWASP ZAP et test de charge avec k6 (Q238 à Q242)
+
+```mermaid
+flowchart LR
+  J[Jenkins : build, scans, signature] --> D[Mise à jour GitOps : DEV]
+  D --> Z1[ZAP sur DEV]
+  Z1 --> S[Promotion STAGING par Git]
+  S --> K[k6 sur STAGING]
+  K --> Z2[ZAP sur STAGING]
+  Z2 --> P[Promotion PROD par Git]
+```
+
+Les contrôles dynamiques (le site tourne vraiment, on l'attaque ou on le charge de l'extérieur) viennent **après** les contrôles statiques (Gitleaks, Semgrep, Trivy) et **avant** la production : la promotion vers PROD n'a lieu que si STAGING a tout réussi.
+
+## Les scripts (dossier `automation/`)
+| Script | Rôle |
+|---|---|
+| `url-cible.sh` | donne l'adresse du frontend d'un environnement (`dev`, `staging`, `prod`) |
+| `attendre-deploiement.sh` | attend qu'**Argo CD** ait déployé l'empreinte voulue et que les pods soient prêts (sinon, le test viserait l'ancienne version) |
+| `dast-zap.sh` | exécute `zap-baseline.py` (analyse passive + exploration, **sans attaque active**) dans un conteneur et **échoue (code 1)** si une alerte de risque élevé est trouvée (`ZAP_FAIL_ON=medium` pour durcir) |
+| `load-k6.sh` | exécute le test k6 `tests/load/smoke.js` |
+
+Le `Jenkinsfile` reçoit cinq étapes après « Mise a jour GitOps » : **DAST ZAP (DEV)**, **Promotion STAGING**, **Tests de charge k6 (STAGING)**, **DAST ZAP (STAGING)** et **Promotion PROD**. Les rapports sont archivés (`zap-out/`, `k6-out/`). `gitops-update.sh` échoue maintenant si le `git push` échoue (avant, il affichait un succès à tort quand le réseau était coupé).
+
+## Test de charge k6 sur STAGING
+Le test (`tests/load/smoke.js`) simule des visiteurs qui ouvrent l'accueil et la page des projets : montée à **10 utilisateurs virtuels** en 15 s, palier de 30 s, descente de 5 s. Les **seuils** font échouer le test :
+
+| Seuil | Valeur |
+|---|---|
+| requêtes en échec (`http_req_failed`) | moins de 1 % |
+| latence p95, globale et par page | moins de 1500 ms (modifiable avec `P95_MS`) |
+| vérifications (statut 200) | plus de 99 % |
+
+Résultat sur STAGING (`docs/resultats/k6-staging.txt`) :
+
+| Mesure | Résultat |
+|---|---|
+| requêtes | 622 en 50 s (12,3 par seconde), **0 en échec** |
+| vérifications | **622 sur 622** réussies |
+| latence p95 | **503 ms** (accueil 562 ms, projets 448 ms), moyenne 156 ms, maximum 935 ms |
+| conclusion | tous les seuils respectés, code de sortie 0 |
+
+**Preuve que le pipeline s'arrêterait (Q241).** Le même test avec un seuil impossible (`P95_MS=1`, soit 1 ms) échoue : k6 écrit `thresholds on metrics 'http_req_duration, ...' have been crossed` et se termine avec le **code 99** (`docs/resultats/k6-seuil-echec.txt`). Jenkins traite tout code différent de 0 comme un échec : la promotion vers PROD n'aurait pas lieu.
+
+Pour que le test reste honnête, il faut que STAGING soit **comparable** à PROD : mêmes images (promues par la même empreinte), mais moins de réplicas dans ce laboratoire (1 contre 2).
+
+<!-- ZAP:DEBUT -->
+## Analyse OWASP ZAP
+Le script `dast-zap.sh` et les étapes Jenkins sont écrits. **Limite assumée :** l'image `zaproxy` (1,1 Go) n'a pas pu être téléchargée à temps, le réseau de la VM coupant chaque connexion à 100 Mo (`short read: expected 480697796 bytes but got 104857600`). Les rapports ZAP « avant » et « après » correction ne sont donc pas encore dans ce dépôt.
+<!-- ZAP:FIN -->
+
+### Difficultés rencontrées (section 46)
+| Problème | Cause | Solution |
+|---|---|---|
+| `docker pull` de ZAP en échec en boucle (`connection reset by peer`, `unexpected EOF`) | le réseau coupe chaque connexion à 100 Mo exactement, et Docker recommence la grosse couche à zéro | téléchargement des couches par morceaux avec reprise (`curl -C -`) puis `docker load` |
+| Deux téléchargements lancés en même temps | commande relancée, deux processus écrivaient dans le même fichier (« 27 / 26 Mo ») | arrêt de tous les processus, une seule copie relancée |
+| `gitops-update.sh` affichait un succès alors que le push échouait | code de retour ignoré | le script sort en erreur si le push échoue |
+
+---
+
 
 ---
 
@@ -2884,7 +3047,7 @@ La procédure à suivre est dans `docs/runbooks/api-indisponible.md` : symptôme
 | Section 40 : environnements GitOps | 211-215 | ✅ fait |
 | Section 41 : CI/CD GitOps avec Jenkins | 216-218 | ✅ fait (pipeline non rejoué en entier) |
 | Section 42 : Prometheus et Grafana | 219-225 | ✅ fait |
-| Section 43 : OpenTelemetry et traces | 226-230 | ⏳ en cours |
-| Section 44 : Loki et corrélation métriques, journaux, traces | 231-233 | ⏳ en cours |
+| Section 43 : OpenTelemetry et traces | 226-230 | ✅ fait |
+| Section 44 : Loki et corrélation métriques, journaux, traces | 231-233 | ✅ fait |
 | Section 45 : SLI, SLO, alertes et runbook | 234-237 | ✅ fait (sans Alertmanager) |
-| Section 46 : OWASP ZAP et k6 | 238-242 | ⏳ à faire |
+| Section 46 : OWASP ZAP et k6 | 238-242 | ⚠️ k6 fait ; ZAP : script prêt, rapports à ajouter |

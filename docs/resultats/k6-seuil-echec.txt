@@ -1,0 +1,6 @@
+# P95_MS=1 bash automation/load-k6.sh staging k6-out/echec  (seuil volontairement impossible : 1 ms)
+CODE_DE_SORTIE=99
+    vus_max........................: 10    min=10       max=10
+
+running (0m50.7s), 00/10 VUs, 304 complete and 0 interrupted iterations
+time="2026-11-18T21:30:07Z" level=error msg="thresholds on metrics 'http_req_duration, http_req_duration{page:accueil}, http_req_duration{page:projets}' have been crossed"
