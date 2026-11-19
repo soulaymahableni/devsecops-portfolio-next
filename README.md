@@ -3000,8 +3000,43 @@ Résultat sur STAGING (`docs/resultats/k6-staging.txt`) :
 Pour que le test reste honnête, il faut que STAGING soit **comparable** à PROD : mêmes images (promues par la même empreinte), mais moins de réplicas dans ce laboratoire (1 contre 2).
 
 <!-- ZAP:DEBUT -->
-## Analyse OWASP ZAP
-Le script `dast-zap.sh` et les étapes Jenkins sont écrits. **Limite assumée :** l'image `zaproxy` (1,1 Go) n'a pas pu être téléchargée à temps, le réseau de la VM coupant chaque connexion à 100 Mo (`short read: expected 480697796 bytes but got 104857600`). Les rapports ZAP « avant » et « après » correction ne sont donc pas encore dans ce dépôt.
+## Analyse OWASP ZAP et correction (Q238 à Q240)
+
+Le scan `zap-baseline.py` (passif, sans attaque) cherche surtout des **protections HTTP manquantes**. Sur un site Next.js livré par défaut, les trois constats classiques sont : aucun en-tête anti-clickjacking, aucune politique de sécurité du contenu (CSP) et un en-tête `X-Powered-By: Next.js` qui annonce la technologie.
+
+### Correction appliquée
+Le fichier `next.config.mjs` ajoute des **en-têtes de sécurité** à toutes les réponses du frontend et supprime `X-Powered-By` (`poweredByHeader: false`) :
+
+| En-tête | Ce qu'il empêche |
+|---|---|
+| `X-Content-Type-Options: nosniff` | le navigateur qui devine le type d'un fichier et exécute un contenu déguisé |
+| `X-Frame-Options: DENY` et `frame-ancestors 'none'` | l'affichage du site dans un cadre d'un autre site (**clickjacking**) |
+| `Content-Security-Policy` | le chargement de scripts, images ou formulaires venant d'ailleurs que du site (limite les attaques **XSS**) |
+| `Referrer-Policy` | la fuite de l'adresse complète vers les sites externes |
+| `Permissions-Policy` | l'accès à la caméra, au micro et à la géolocalisation |
+| suppression de `X-Powered-By` | l'annonce de la technologie utilisée |
+
+**Limite de la CSP :** `script-src` et `style-src` gardent `'unsafe-inline'`, car Next.js injecte de petits scripts en ligne. Une CSP stricte avec **nonce** (valeur aléatoire par requête) serait meilleure, mais demande un rendu dynamique et plus de réglages ; elle est notée comme amélioration.
+
+### Preuve avant / après
+Même requête (`curl -sI`) sur le service frontend de chaque environnement (`docs/resultats/en-tetes-avant-apres.txt`) :
+
+| | staging (frontend **1.1**, avant) | dev (frontend **1.2**, après) |
+|---|---|---|
+| `X-Powered-By` | `Next.js` | absent |
+| `X-Content-Type-Options` | absent | `nosniff` |
+| `X-Frame-Options` | absent | `DENY` |
+| `Content-Security-Policy` | absent | présente |
+| `Referrer-Policy` | absent | `strict-origin-when-cross-origin` |
+| `Permissions-Policy` | absent | présente |
+
+### Déploiement de la correction (sans rien déployer à la main)
+1. L'image **frontend 1.2** est construite et publiée dans Harbor (`sha256:9bb63b80c11dd650859a35ad4d8e295d57de6aa7af82145a20b4c9a638cfc6e7`).
+2. Elle est **signée avec Cosign** (la politique Kyverno refuserait une image non signée).
+3. `gitops-update.sh` écrit l'empreinte dans la branche `gitops` ; **Argo CD** déploie en dev et `attendre-deploiement.sh` attend que les pods soient prêts. Kyverno a accepté l'image signée.
+
+### Rapport ZAP
+**Limite assumée :** l'image `zaproxy` (1,1 Go) n'a pas pu être téléchargée à temps : le réseau de la VM coupe chaque connexion à 100 Mo (`short read: expected 480697796 bytes but got 104857600`) et avance à environ 200 Ko/s. Un téléchargement par morceaux avec reprise est en cours ; les rapports ZAP « avant » et « après » ne sont donc **pas encore** dans ce dépôt. La preuve avant/après ci-dessus est faite directement sur les en-têtes HTTP, ce que ZAP contrôle justement.
 <!-- ZAP:FIN -->
 
 ### Difficultés rencontrées (section 46)

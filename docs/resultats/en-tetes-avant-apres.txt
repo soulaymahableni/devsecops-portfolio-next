@@ -1,0 +1,12 @@
+# curl -sI sur le service frontend de chaque environnement (2026-11-19)
+# staging = frontend 1.1 (avant correction), dev = frontend 1.2 (apres correction)
+== staging
+HTTP/1.1 200 OK
+X-Powered-By: Next.js
+== dev
+HTTP/1.1 200 OK
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Referrer-Policy: strict-origin-when-cross-origin
+Permissions-Policy: camera=(), microphone=(), geolocation=()
+Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
