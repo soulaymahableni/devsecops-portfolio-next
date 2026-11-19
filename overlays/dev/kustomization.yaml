@@ -12,7 +12,7 @@ replicas:
 images:
   - name: devsecops-portfolio
     newName: 192.168.190.141:8085/portfolio/devsecops-portfolio
-    digest: sha256:a8eba95b93c7910bda9eb976123edcf46e745a06b8d769aef381c44cd0327dc7
+    digest: sha256:9bb63b80c11dd650859a35ad4d8e295d57de6aa7af82145a20b4c9a638cfc6e7
   - name: devsecops-api
     newName: 192.168.190.141:8085/portfolio/devsecops-api
     digest: sha256:6d0774f1f659216f7f83a65dd1ab9cee6c942997921ed85a3ac63c9ba805a200
