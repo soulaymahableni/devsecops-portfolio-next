@@ -3035,8 +3035,28 @@ Même requête (`curl -sI`) sur le service frontend de chaque environnement (`do
 2. Elle est **signée avec Cosign** (la politique Kyverno refuserait une image non signée).
 3. `gitops-update.sh` écrit l'empreinte dans la branche `gitops` ; **Argo CD** déploie en dev et `attendre-deploiement.sh` attend que les pods soient prêts. Kyverno a accepté l'image signée.
 
-### Rapport ZAP
-**Limite assumée :** l'image `zaproxy` (1,1 Go) n'a pas pu être téléchargée à temps : le réseau de la VM coupe chaque connexion à 100 Mo (`short read: expected 480697796 bytes but got 104857600`) et avance à environ 200 Ko/s. Un téléchargement par morceaux avec reprise est en cours ; les rapports ZAP « avant » et « après » ne sont donc **pas encore** dans ce dépôt. La preuve avant/après ci-dessus est faite directement sur les en-têtes HTTP, ce que ZAP contrôle justement.
+### Rapport ZAP : avant et après (Q238 à Q240)
+Même commande sur le même environnement (STAGING), avant puis après le déploiement du frontend 1.2 (`docs/resultats/zap-avant.txt` et `docs/resultats/zap-apres.txt`) :
+
+| Risque | Alerte | Avant (1.1) | Après (1.2) |
+|---|---|---|---|
+| Medium | CSP absente (`Content Security Policy (CSP) Header Not Set`) | ✗ 5 | ✅ corrigée |
+| Medium | En-tête anti-clickjacking absent | ✗ 5 | ✅ corrigée |
+| Medium | `CSP: script-src unsafe-inline` | : | ⚠️ nouvelle (5) |
+| Medium | `CSP: style-src unsafe-inline` | : | ⚠️ nouvelle (5) |
+| Low | `X-Content-Type-Options` absent | ✗ 5 | ✅ corrigée |
+| Low | Fuite `X-Powered-By` | ✗ 5 | ✅ corrigée |
+| Low | `Permissions-Policy` absent | ✗ 5 | ✅ corrigée |
+| Low | `Cross-Origin-Embedder/Opener/Resource-Policy` | ✗ 3 + 3 + 5 | ✗ inchangées |
+| Informational | 3 alertes d'information (URL, contenu non stockable ou cacheable) | 3 | 3 |
+| | **Total** | **11** | **8** |
+
+- **Alertes de niveau élevé : 0 avant comme après** : le seuil du script (`ZAP_FAIL_ON=high`) n'aurait donc pas bloqué le pipeline. Avec `ZAP_FAIL_ON=medium`, il bloquerait dans les deux cas : c'est le seuil à choisir selon l'exigence voulue.
+- **5 alertes corrigées** (CSP absente, anti-clickjacking, `nosniff`, `X-Powered-By`, `Permissions-Policy`).
+- **Deux alertes Medium apparaissent** : elles n'existaient pas avant, parce que ZAP ne jugeait pas une CSP qui n'existait pas. Elles décrivent la limite connue de notre CSP : `'unsafe-inline'` est conservé car Next.js injecte de petits scripts en ligne. Le nombre d'alertes Medium reste à 2, mais leur nature change : de « aucune protection » à « protection avec une faiblesse connue ». La corriger demande une CSP à **nonce** (valeur aléatoire par requête, rendu dynamique).
+- **Les trois en-têtes `Cross-Origin-*`** (isolation entre sites) ne sont pas ajoutés : ils peuvent empêcher le chargement de ressources externes et n'apportent presque rien à un portfolio statique. Choix assumé.
+
+**Ajustements de laboratoire (honnêtes) :** le premier scan, avec une exploration de 2 minutes, est resté bloqué 31 minutes : la VM n'a que 5,4 Go de RAM (2,7 Go de swap utilisés). Il a été relancé avec une exploration de **1 minute** et une durée maximale de **8 minutes** (`-m 1 -T 8` dans `dast-zap.sh`), après avoir mis Grafana et Tempo en pause pour libérer de la mémoire. L'image ZAP (1,1 Go) a été téléchargée par morceaux avec reprise : le réseau coupait chaque connexion à 100 Mo.
 <!-- ZAP:FIN -->
 
 ### Difficultés rencontrées (section 46)
@@ -3162,7 +3182,7 @@ Les runners auto-hébergés dans Kubernetes (Actions Runner Controller, Q267-Q26
 | Section 43 : OpenTelemetry et traces | 226-230 | ✅ fait |
 | Section 44 : Loki et corrélation métriques, journaux, traces | 231-233 | ✅ fait |
 | Section 45 : SLI, SLO, alertes et runbook | 234-237 | ✅ fait (sans Alertmanager) |
-| Section 46 : OWASP ZAP et k6 | 238-242 | ⚠️ k6 fait ; ZAP : script prêt, rapports à ajouter |
+| Section 46 : OWASP ZAP et k6 | 238-242 | ✅ fait (ZAP : 11 alertes avant, 8 après, aucune de niveau élevé ; k6 : seuils respectés) |
 | Section 47 : Progressive Delivery | 243-248 | ⚠️ manifestes écrits, non déployés |
 | Section 48 : CloudNativePG | 249-252 | ⚠️ comparaison rédigée, non installé |
 | Section 49 : Velero | 253-256 | ❌ non réalisé |
