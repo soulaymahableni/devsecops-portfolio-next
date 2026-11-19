@@ -1,0 +1,63 @@
+# Q245-Q247 : deploiement progressif de l'API (Canary) avec analyse Prometheus.
+# Prepare, non deploye : voir README, section « Activite 9 ».
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: api-canary
+  labels:
+    app: api-canary
+spec:
+  replicas: 4
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels:
+      app: api-canary
+  strategy:
+    canary:
+      # Q246 : 10 % -> 25 % -> 50 % -> 100 %, avec une analyse automatique a chaque palier
+      steps:
+        - setWeight: 10
+        - pause: {duration: 60s}
+        - analysis:
+            templates:
+              - templateName: taux-erreurs-5xx
+            args:
+              - name: namespace
+                value: portfolio-dev
+        - setWeight: 25
+        - pause: {duration: 60s}
+        - setWeight: 50
+        - pause: {duration: 60s}
+        - setWeight: 100
+  template:
+    metadata:
+      labels:
+        app: api-canary
+    spec:
+      serviceAccountName: portfolio-app
+      imagePullSecrets:
+        - name: harbor-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: 192.168.190.141:8085/portfolio/devsecops-api@sha256:6d0774f1f659216f7f83a65dd1ab9cee6c942997921ed85a3ac63c9ba805a200
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 4000
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 4000
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {memory: 192Mi}

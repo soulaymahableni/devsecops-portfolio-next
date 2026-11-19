@@ -3051,6 +3051,83 @@ Même requête (`curl -sI`) sur le service frontend de chaque environnement (`do
 
 ---
 
+# Activité 9 : sections 47 à 52 (Q243 à Q268)
+
+**État honnête.** Cette activité n'a pas été déployée dans le laboratoire : les téléchargements de la journée (l'image ZAP de 1,1 Go avec un réseau à 5 Mbps) et les 5,4 Go de RAM de la VM, déjà presque saturés par K3s, Harbor, Argo CD, Prometheus et Kyverno, ne laissaient pas la place d'installer Argo Rollouts, CloudNativePG, Velero, Keycloak et Istio avant l'échéance. Ce chapitre contient donc :
+- les **manifestes de la section 47**, écrits et validés (YAML), **non déployés** ;
+- les **réponses de réflexion** (comparaisons, explications) qui ne demandent pas d'installation ;
+- la **démarche prévue** pour le reste, avec la limite réelle.
+
+| Section | Questions | État |
+|---|---|---|
+| 47 Progressive Delivery | 243-248 | ⚠️ manifestes Blue/Green, Canary et analyse Prometheus écrits ; non déployés ; explication Q248 rédigée |
+| 48 CloudNativePG | 249-252 | ⚠️ comparaison Q251 rédigée ; non installé |
+| 49 Velero | 253-256 | ❌ non réalisé (démarche décrite) |
+| 50 Keycloak | 257-261 | ❌ non réalisé (démarche décrite) |
+| 51 Service Mesh | 262-265 | ⚠️ comparaisons Q262 et Q265 rédigées ; non installé |
+| 52 CI/CD avancée | 266-268 | ⚠️ explication Q266 rédigée ; non réalisé |
+
+## Section 47 : Progressive Delivery (Q243 à Q248)
+
+Les fichiers sont dans `k8s/rollouts/` :
+
+| Fichier | Rôle |
+|---|---|
+| `api-bluegreen.yaml` | **Blue/Green** (Q244) : la nouvelle version est déployée à côté de l'ancienne, testée par un service de prévisualisation, puis le trafic bascule d'un coup à la promotion (`autoPromotionEnabled: false`) |
+| `api-canary.yaml` | **Canary** (Q245-Q246) : progression **10 % → 25 % → 50 % → 100 %** avec une pause de 60 s à chaque palier et une analyse après le premier palier |
+| `analysis-erreurs-5xx.yaml` | **Rollback automatique** (Q247) : `AnalysisTemplate` qui interroge Prometheus ; si le taux d'erreurs 5xx dépasse **5 %**, Argo Rollouts annule la progression et revient à la version stable |
+
+L'installation (Q243) se fait avec `kubectl create namespace argo-rollouts` puis l'application du manifeste officiel d'Argo Rollouts, et `kubectl argo rollouts get rollout api-canary --watch` suit la progression. **Cette installation n'a pas été exécutée**, donc la capture de rollback automatique demandée n'est pas fournie.
+
+Les pods des manifestes respectent les mêmes règles que le reste du dépôt (`runAsNonRoot`, `allowPrivilegeEscalation: false`, profil seccomp, limites de mémoire).
+
+### Déploiement technique et activation fonctionnelle (Q248)
+- Le **déploiement technique** met une nouvelle version du code en production : image, pods, trafic. C'est une opération d'infrastructure, qui comporte un risque (bug, régression) et qu'on annule par un **rollback**.
+- L'**activation fonctionnelle** rend une fonctionnalité visible aux utilisateurs. Avec un **feature flag** (OpenFeature), le code est déjà déployé mais « éteint » ; on l'allume par une valeur de configuration, pour un pourcentage d'utilisateurs ou un groupe, sans redéployer, et on l'éteint aussitôt en cas de problème.
+
+Séparer les deux réduit le risque : on peut déployer souvent et en continu (le code dormant ne change rien), puis décider **quand** et **pour qui** activer. L'OpenFeature est le standard ouvert qui évite de dépendre d'un fournisseur de flags. Il n'a pas été ajouté à l'API dans ce laboratoire.
+
+## Section 48 : CloudNativePG (Q249 à Q252)
+
+### Comparaison (Q251)
+| | PostgreSQL en Deployment classique (notre laboratoire) | CloudNativePG |
+|---|---|---|
+| Mise en place | un Deployment, un PVC, un Service | un opérateur et un objet `Cluster` |
+| Haute disponibilité | un seul pod : s'il tombe, la base est indisponible le temps du redémarrage | un primaire et des réplicas, **bascule automatique** |
+| Sauvegarde | à écrire soi-même (`pg_dump`, cron) | **sauvegardes et restauration à un instant donné** intégrées, vers un stockage S3 |
+| Mises à jour | manuelles | mises à jour progressives gérées par l'opérateur |
+| Coût dans le laboratoire | faible | opérateur + au moins 2 pods PostgreSQL : trop lourd pour 5,4 Go |
+
+La sauvegarde vers un bucket S3 de Floci (Q252) n'a pas été réalisée.
+
+## Section 49 : Velero (Q253 à Q256) : non réalisé
+La démarche prévue : installer Velero avec le plugin AWS pointé vers le bucket S3 de **Floci** (`s3Url` du laboratoire), sauvegarder le namespace (`velero backup create portfolio --include-namespaces portfolio-dev`), le supprimer volontairement (`kubectl delete namespace portfolio-dev`), puis restaurer (`velero restore create --from-backup portfolio`). Argo CD recréerait ensuite les objets : il faut donc **mettre l'application en pause** avant la suppression pour que la restauration Velero soit la seule actrice.
+
+## Section 50 : Keycloak (Q257 à Q261) : non réalisé
+Keycloak (environ 500 Mo d'image et plus de 700 Mo de RAM) ne tient pas dans la mémoire restante de la VM. La démarche prévue : un realm `portfolio`, un client OpenID Connect pour le frontend, les rôles `user`, `developer` et `admin`, la validation du jeton (signature, `aud`, `exp`) dans l'API Express et un contrôle de rôle sur une route (par exemple `403 Forbidden` pour un `user` sur une route `admin`).
+
+## Section 51 : Service Mesh (Q262 à Q265)
+
+### Istio ou Linkerd (Q262)
+| | Istio | Linkerd |
+|---|---|---|
+| Complexité | riche, nombreux objets (`VirtualService`, `DestinationRule`...) | plus simple, installation courte |
+| Poids | plus lourd (plan de contrôle et proxys Envoy) | plus léger (proxys en Rust) |
+| mTLS | à activer par `PeerAuthentication` | activé **par défaut** entre les pods injectés |
+| Pour ce laboratoire | trop gourmand en RAM | meilleur candidat, mais non installé |
+
+### Répartition de trafic et Canary d'Argo Rollouts (Q265)
+Une règle de maillage (`VirtualService` avec `weight: 90` et `weight: 10`) répartit les requêtes **entre deux versions déjà en place**, de façon précise (au pourcentage de requêtes), mais elle ne décide rien : c'est à une personne de changer les poids. Le **Canary d'Argo Rollouts** automatise la progression (10 → 25 → 50 → 100 %) et le **rollback** selon une analyse Prometheus ; sans maillage, il s'appuie sur le nombre de pods (la précision dépend des réplicas). Les deux se combinent : Argo Rollouts pilote les poids d'un `VirtualService` Istio.
+
+## Section 52 : CI/CD avancée (Q266 à Q268)
+
+### Jeton éphémère ou secret statique (Q266)
+Un **secret statique** (clé d'accès cloud rangée dans les secrets GitHub) vit des mois, peut fuiter (journaux, copie, ancien employé) et donne les mêmes droits à tout appelant. Avec **OIDC / Workload Identity Federation**, GitHub Actions présente un jeton signé qui prouve « je suis ce dépôt, cette branche, ce workflow » ; le fournisseur cloud l'échange contre des identifiants **valables quelques minutes** et limités à un rôle. Un jeton volé devient presque inutile quand il expire, et on peut restreindre l'accès à une branche précise. Ce laboratoire n'a pas de fournisseur cloud réel (Floci est local), donc ce point n'est pas mis en œuvre.
+
+Les runners auto-hébergés dans Kubernetes (Actions Runner Controller, Q267-Q268) seraient installés dans un **namespace dédié**, avec un `ServiceAccount` sans droit, des runners **éphémères** (un pod par job) et une `NetworkPolicy` restrictive. Non installé.
+
+---
+
 # Avancement général
 
 | Partie | Questions | État |
@@ -3086,3 +3163,9 @@ Même requête (`curl -sI`) sur le service frontend de chaque environnement (`do
 | Section 44 : Loki et corrélation métriques, journaux, traces | 231-233 | ✅ fait |
 | Section 45 : SLI, SLO, alertes et runbook | 234-237 | ✅ fait (sans Alertmanager) |
 | Section 46 : OWASP ZAP et k6 | 238-242 | ⚠️ k6 fait ; ZAP : script prêt, rapports à ajouter |
+| Section 47 : Progressive Delivery | 243-248 | ⚠️ manifestes écrits, non déployés |
+| Section 48 : CloudNativePG | 249-252 | ⚠️ comparaison rédigée, non installé |
+| Section 49 : Velero | 253-256 | ❌ non réalisé |
+| Section 50 : Keycloak | 257-261 | ❌ non réalisé |
+| Section 51 : Service Mesh | 262-265 | ⚠️ comparaisons rédigées, non installé |
+| Section 52 : CI/CD avancée | 266-268 | ⚠️ explication rédigée, non réalisé |
